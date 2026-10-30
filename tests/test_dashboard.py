@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.api.rate_limit import reset_rate_limits
 from app.core.config import Settings, reset_settings_cache
@@ -574,3 +574,168 @@ async def test_a_new_registration_shows_on_the_board_without_a_punch(client):
     after = await client.get("/admin")
     assert "Carol Example" in after.text
     assert "TS4099" in after.text
+
+
+# ---- deleting a stored face photograph ----------------------------------------------------
+
+
+async def photographed_punch(client) -> int:
+    """Register somebody, punch once, and return the attendance row id holding the photo."""
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T08:58:00Z")
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        row = (
+            await session.execute(
+                select(AttendanceEvent.id, AttendanceEvent.probe_image_object_key)
+                .order_by(AttendanceEvent.id.desc())
+                .limit(1)
+            )
+        ).one()
+
+    event_id, object_key = row
+    assert object_key, "the fixture needs a punch that actually stored a photo"
+    return event_id
+
+
+async def test_the_photo_page_shows_the_face_and_who_it_belongs_to(client):
+    event_id = await photographed_punch(client)
+    await client.post("/admin/login", data={"password": PASSWORD})
+
+    page = await client.get(f"/admin/photo/{event_id}")
+
+    assert page.status_code == 200
+    assert "Alice Example" in page.text
+    assert "TS4012" in page.text
+    assert f"/admin/photo/{event_id}/image" in page.text
+    # The image itself is a separate request, so opening the page does not fetch the face
+    # until the browser asks for it.
+    assert (await client.get(f"/admin/photo/{event_id}/image")).status_code == 200
+
+
+async def test_deleting_a_photo_needs_confirming_first(client):
+    event_id = await photographed_punch(client)
+    await client.post("/admin/login", data={"password": PASSWORD})
+
+    plain = await client.get(f"/admin/photo/{event_id}")
+    assert "Delete this photo" in plain.text
+    assert "Yes, delete the photo" not in plain.text
+
+    confirming = await client.get(f"/admin/photo/{event_id}?confirm=1")
+    assert "Yes, delete the photo" in confirming.text
+    assert "cannot be recovered" in confirming.text
+
+    # Still there: asking the question must not answer it.
+    assert (await client.get(f"/admin/photo/{event_id}/image")).status_code == 200
+
+
+async def test_deleting_a_photo_removes_the_image_but_keeps_the_record(client):
+    event_id = await photographed_punch(client)
+    await client.post("/admin/login", data={"password": PASSWORD})
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        before = (
+            await session.execute(
+                select(AttendanceEvent.probe_image_object_key, AttendanceEvent.direction)
+                .where(AttendanceEvent.id == event_id)
+            )
+        ).one()
+
+    deleted = await client.post(f"/admin/photo/{event_id}/delete")
+    assert deleted.status_code == 303
+    assert deleted.headers["location"] == f"/admin/photo/{event_id}"
+
+    # The picture is gone.
+    assert (await client.get(f"/admin/photo/{event_id}/image")).status_code == 404
+
+    async with factory() as session:
+        after = (
+            await session.execute(
+                select(
+                    AttendanceEvent.probe_image_object_key,
+                    AttendanceEvent.direction,
+                    AttendanceEvent.decision,
+                ).where(AttendanceEvent.id == event_id)
+            )
+        ).one()
+
+    assert after[0] is None
+    # The record is not: this is the whole point. The hours must not move because a
+    # photograph was erased.
+    assert after[1] == before[1]
+    assert after[2] == AttendanceDecision.Accepted
+
+
+async def test_the_register_still_lists_a_punch_whose_photo_was_deleted(client):
+    event_id = await photographed_punch(client)
+    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post(f"/admin/photo/{event_id}/delete")
+
+    register = await client.get("/admin/register")
+
+    assert register.status_code == 200
+    assert "Alice Example" in register.text
+    # The row survives; only its "show" link goes.
+    assert f'href="/admin/photo/{event_id}"' not in register.text
+
+
+async def test_the_page_says_so_when_the_photo_is_already_gone(client):
+    event_id = await photographed_punch(client)
+    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post(f"/admin/photo/{event_id}/delete")
+
+    page = await client.get(f"/admin/photo/{event_id}")
+
+    assert page.status_code == 200
+    assert "no photo for this attempt any more" in page.text
+    assert "Delete this photo" not in page.text
+
+
+async def test_deleting_twice_is_harmless(client):
+    event_id = await photographed_punch(client)
+    await client.post("/admin/login", data={"password": PASSWORD})
+
+    assert (await client.post(f"/admin/photo/{event_id}/delete")).status_code == 303
+    # Somebody refreshing, or two people on the same row. Neither should produce an error.
+    assert (await client.post(f"/admin/photo/{event_id}/delete")).status_code == 303
+
+
+async def test_a_stranger_cannot_see_or_delete_a_photo(client):
+    event_id = await photographed_punch(client)
+
+    # No sign-in at all.
+    for path in (f"/admin/photo/{event_id}", f"/admin/photo/{event_id}/image"):
+        response = await client.get(path)
+        assert response.status_code == 303, path
+        assert response.headers["location"] == "/admin/login"
+
+    refused = await client.post(f"/admin/photo/{event_id}/delete")
+    assert refused.status_code == 303
+    assert refused.headers["location"] == "/admin/login"
+
+    # And it is still there afterwards.
+    await client.post("/admin/login", data={"password": PASSWORD})
+    assert (await client.get(f"/admin/photo/{event_id}/image")).status_code == 200
+
+
+async def test_a_photo_from_another_tenant_is_not_reachable(client):
+    event_id = await photographed_punch(client)
+    await client.post("/admin/login", data={"password": PASSWORD})
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        await session.execute(
+            update(AttendanceEvent)
+            .where(AttendanceEvent.id == event_id)
+            .values(tenant_id="somebody-else")
+        )
+        await session.commit()
+
+    assert (await client.get(f"/admin/photo/{event_id}")).status_code == 404
+    assert (await client.get(f"/admin/photo/{event_id}/image")).status_code == 404
+    assert (await client.post(f"/admin/photo/{event_id}/delete")).status_code == 404

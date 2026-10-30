@@ -7,8 +7,10 @@ Deliberately plain. No front-end framework, no CDN, one stylesheet in the base t
 this has to load on the office LAN with no internet, on a phone held at reception, and keep
 working when nobody has touched it for a year.
 
-It is read-only. Nothing here writes to the database, so the worst a mistake on these pages
-can do is show the wrong number.
+Almost entirely read-only: the pages compute, they do not change anything. The single
+exception is deleting a stored face photograph, which is deliberate - somebody has to be able
+to erase a picture of a person on request, and that belongs on the screen where the picture is
+shown. It removes the image only; the attendance row it belongs to is left alone.
 
 Two decisions worth knowing about:
 
@@ -35,7 +37,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.admin import lockout, queries
 from app.api.deps import ImageStoreDep, SessionDep, SettingsDep, TenantDep
@@ -499,15 +501,47 @@ async def monthly_csv(
     )
 
 
-@router.get("/photo/{event_id}")
-async def photo(
+@router.get("/photo/{event_id}", response_class=HTMLResponse)
+async def photo_page(
+    request: Request,
+    event_id: int,
+    session: SessionDep,
+    tenant: TenantDep,
+    settings: SettingsDep,
+    _: SignedIn,
+    confirm: str | None = None,
+) -> Response:
+    """The face stored at one punch, with the context needed to know whose it is.
+
+    A page rather than the bare image, because this is where somebody decides whether the
+    photograph should still exist - and that decision needs to be taken looking at the face,
+    not at a row in a table.
+    """
+    event = await queries.one_event(session, tenant, event_id)
+
+    if event is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "There is no such attendance row.")
+
+    return _page(
+        request,
+        "photo.html",
+        "register",
+        "Photo",
+        event=event,
+        confirming=confirm == "1",
+        retention_days=settings.face.probe_image_retention_days,
+    )
+
+
+@router.get("/photo/{event_id}/image")
+async def photo_image(
     event_id: int,
     session: SessionDep,
     store: ImageStoreDep,
     tenant: TenantDep,
     _: SignedIn,
 ) -> Response:
-    """The photo taken at one punch, fetched only when somebody asks for it.
+    """The photograph itself, fetched only when a page asks for it.
 
     Scoped to the tenant and never cached: this is a photograph of a person's face.
     """
@@ -538,4 +572,60 @@ async def photo(
             "Cache-Control": "no-store, no-cache, must-revalidate",
             "Pragma": "no-cache",
         },
+    )
+
+
+@router.post("/photo/{event_id}/delete")
+async def delete_photo(
+    request: Request,
+    event_id: int,
+    session: SessionDep,
+    store: ImageStoreDep,
+    tenant: TenantDep,
+    _: SignedIn,
+) -> Response:
+    """Erase one stored face photograph. The attendance record itself stays.
+
+    Those are two different things and conflating them would be a bad trade: a photograph is
+    personal data somebody may reasonably want gone, while the fact that they clocked in at
+    08:58 is the record their pay is calculated from. Deleting the picture must not quietly
+    delete the hours.
+
+    File first, then the key - the same order the retention sweep uses, so an interruption
+    leaves an orphaned file rather than a row pointing at a file that is no longer there.
+    """
+    row = (
+        await session.execute(
+            select(AttendanceEvent.probe_image_object_key).where(
+                AttendanceEvent.id == event_id, AttendanceEvent.tenant_id == tenant
+            )
+        )
+    ).first()
+
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "There is no such attendance row.")
+
+    object_key = row[0]
+
+    if object_key:
+        await store.delete(object_key)
+
+        await session.execute(
+            update(AttendanceEvent)
+            .where(AttendanceEvent.id == event_id, AttendanceEvent.tenant_id == tenant)
+            .values(probe_image_object_key=None)
+        )
+        await session.commit()
+
+        # Worth a line in the log: a deliberate erasure of personal data, by hand, is exactly
+        # the kind of thing somebody asks about six months later.
+        logger.warning(
+            "Deleted the stored photo for attendance row %s at the request of a signed-in "
+            "dashboard user from %s",
+            event_id,
+            request.client.host if request.client else "unknown",
+        )
+
+    return RedirectResponse(
+        f"/admin/photo/{event_id}", status_code=status.HTTP_303_SEE_OTHER
     )

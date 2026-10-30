@@ -36,7 +36,7 @@
           {% else %}<span class="tag t-bad">{{ r.result }}</span>{% endif %}
         </td>
         <td>{{ r.device or '' }}</td>
-        <td>{% if r.has_photo %}<a href="/admin/photo/{{ r.id }}" target="_blank" rel="noreferrer">show</a>{% endif %}</td>
+        <td>{% if r.has_photo %}<a href="/admin/photo/{{ r.id }}">show</a>{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -49,5 +49,6 @@
 <p class="note">Failed attempts are kept on purpose: they are the evidence when somebody says
   the machine did not recognise them. Photos are only loaded when you click
   &ldquo;show&rdquo;, and are deleted automatically after
-  {{ retention_days }} days.</p>
+  {{ retention_days }} days. &ldquo;Show&rdquo; also has a delete button, for when somebody
+  asks for their photo to go sooner — that removes the picture and nothing else.</p>
 {% endblock %}

@@ -636,3 +636,57 @@ async def my_attendance(
         late_days=late,
         absent_days=absent,
     )
+
+
+@dataclass(frozen=True)
+class EventPhoto:
+    """One attendance attempt, enough of it to caption the photograph it stored."""
+
+    event_id: int
+    external_id: str | None
+    full_name: str | None
+    when: datetime
+    direction: str
+    result: str
+    accepted: bool
+    device: str | None
+    has_photo: bool
+
+
+async def one_event(
+    session: AsyncSession, tenant: str, event_id: int
+) -> EventPhoto | None:
+    """The single attempt behind a photo page. Scoped to the tenant, like every other query."""
+    row = (
+        await session.execute(
+            select(
+                AttendanceEvent.id,
+                Person.external_id,
+                Person.full_name,
+                AttendanceEvent.created_at_utc,
+                AttendanceEvent.direction,
+                AttendanceEvent.decision,
+                AttendanceEvent.device_id,
+                AttendanceEvent.probe_image_object_key,
+            )
+            .outerjoin(Person, Person.id == AttendanceEvent.person_id)
+            .where(AttendanceEvent.id == event_id, AttendanceEvent.tenant_id == tenant)
+        )
+    ).first()
+
+    if row is None:
+        return None
+
+    decision = AttendanceDecision(row[5])
+
+    return EventPhoto(
+        event_id=row[0],
+        external_id=row[1],
+        full_name=row[2],
+        when=row[3],
+        direction=AttendanceDirection(row[4]).name if row[4] is not None else "",
+        result=OUTCOME.get(decision, decision.name),
+        accepted=decision == AttendanceDecision.Accepted,
+        device=row[6],
+        has_photo=bool(row[7]),
+    )

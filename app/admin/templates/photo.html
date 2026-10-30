@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>{{ event.full_name or 'Not recognised' }}</h1>
+<p class="when">{{ event.when | stamp }}
+  {%- if event.external_id %} &middot; {{ event.external_id }}{% endif %}</p>
+
+<div class="panel">
+  <h2>The photo taken at this attempt</h2>
+
+  {% if event.has_photo %}
+  <div class="face">
+    <img src="/admin/photo/{{ event.event_id }}/image" alt="The face captured at this attempt">
+    <dl>
+      <dt>When</dt><dd>{{ event.when | stamp }}</dd>
+      <dt>Person</dt><dd>{{ event.full_name or 'not recognised' }}</dd>
+      <dt>ID</dt><dd>{{ event.external_id or '—' }}</dd>
+      <dt>In or out</dt><dd>{{ event.direction or '—' }}</dd>
+      <dt>Result</dt>
+      <dd>
+        {% if event.accepted %}<span class="tag t-in">{{ event.result }}</span>
+        {% else %}<span class="tag t-bad">{{ event.result }}</span>{% endif %}
+      </dd>
+      <dt>Device</dt><dd>{{ event.device or '—' }}</dd>
+    </dl>
+  </div>
+
+  {% if confirming %}
+  <div class="warn">
+    <strong>Delete this photo for good?</strong>
+    The picture is erased from the server and cannot be recovered. The attendance record
+    itself stays exactly as it is — the time, the in/out and the result are not touched, so
+    nobody's hours change.
+  </div>
+  <div class="actions">
+    <form method="post" action="/admin/photo/{{ event.event_id }}/delete">
+      <button type="submit" class="danger">Yes, delete the photo</button>
+    </form>
+    <a class="btn ghost" href="/admin/photo/{{ event.event_id }}">Keep it</a>
+  </div>
+  {% else %}
+  <div class="actions">
+    <a class="btn danger ghost" href="/admin/photo/{{ event.event_id }}?confirm=1">Delete this photo</a>
+    <a class="btn ghost" href="/admin/register">Back to the register</a>
+  </div>
+  {% endif %}
+
+  {% else %}
+  <p class="empty">There is no photo for this attempt any more.<br>
+    It was either deleted here, or swept up by the {{ retention_days }}-day rule.</p>
+  <div class="actions">
+    <a class="btn ghost" href="/admin/register">Back to the register</a>
+  </div>
+  {% endif %}
+</div>
+
+<p class="note">Deleting a photo removes the picture only. The attendance row stays, so the
+  register and everybody's hours are unaffected. Photos are deleted automatically after
+  {{ retention_days }} days in any case — this is for when somebody asks for theirs to go
+  sooner.</p>
+{% endblock %}
