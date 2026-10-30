@@ -193,3 +193,33 @@ Note that `--proxy-headers` is **not** enabled on the server today, and must be 
 `start-server.cmd` at the same time as the cutover — not before. Until Caddy is in front,
 requests arrive straight from LAN clients, and trusting `X-Forwarded-For` from them would let
 any device on the office network claim any address and walk through the allowlist.
+
+## Seeing who is registered
+
+There is no web page for this yet. Three ways to look, easiest first.
+
+**1. The report script.** Double-click `deploy\who-is-registered.cmd`, or:
+
+```bash
+E:\Fa-py\.venv\Scripts\python.exe E:\Fa-py\deploy\report.py --today
+```
+
+Other options: `--days 7`, `--person TS4012`. It is read-only and cannot change anything.
+
+**2. The API**, if you want JSON for another system:
+
+```bash
+curl -k -H "X-Api-Key: <admin key>" https://172.24.61.79:8443/api/v1/persons
+```
+
+`/api/v1/attendance` is the register, and takes `fromUtc`, `toUtc`, `personId` and `decision`.
+
+**3. The database**, with SQL Server Management Studio or Azure Data Studio: connect to
+`.\SQLEXPRESS` with Windows authentication, database `FaceAttendance`. Three tables — `People`,
+`FaceTemplates`, `AttendanceEvents`.
+
+The registration photographs are on disk at `E:\Fa-py\data\faces\enrollments\default\<person
+id>\`. The attendance photos are under `probes\` and delete themselves after 30 days.
+
+Note that failed attempts are kept deliberately. They are the evidence when somebody says the
+machine did not recognise them.
