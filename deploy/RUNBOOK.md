@@ -291,3 +291,25 @@ Verify before trusting. The thumbprint should be:
 
 This fixes one PC only. Every phone or laptop that opens the dashboard needs the same thing,
 which is the argument for routing the dashboard through Caddy instead.
+
+### The dashboard password
+
+Short on purpose: it is typed every day. That is only safe because repeated wrong guesses are
+locked out — five tries from one address, then a fifteen-minute pause. Everybody in the office
+is on the network that can reach this page, so "only the office can see it" is not on its own
+a defence against somebody working through a word list.
+
+To change it:
+
+```
+E:\Fa-py\deploy\change-dashboard-password.cmd
+```
+
+It asks twice, writes the new value, and updates `deploy\API-KEYS.txt` so the file people
+actually read does not go stale. Add `--suggest` to be offered a short memorable one. Restart
+the service afterwards; anyone already signed in stays signed in.
+
+A lockout clears on its own after fifteen minutes, and a restart clears all of them — useful
+if somebody locks themselves out just before they need the page.
+
+Staff never need any of this. They sign in at `/me` with a photo.

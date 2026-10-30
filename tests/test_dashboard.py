@@ -452,3 +452,84 @@ async def test_a_forgotten_punch_out_is_flagged_not_guessed(client):
 
     # Flagged for a human rather than silently given an end time, which would inflate pay.
     assert "check" in page.text
+
+
+# ---- guessing the password ---------------------------------------------------------------
+# The password is typed daily, so it is short enough to be typeable - which means it is also
+# short enough to guess, given unlimited tries. Everybody in the office can reach this page.
+
+
+async def test_repeated_wrong_passwords_lock_the_caller_out(client):
+    from app.admin import lockout
+
+    lockout.reset()
+
+    for attempt in range(4):
+        response = await client.post("/admin/login", data={"password": f"guess{attempt}"})
+        assert response.status_code == 401
+        assert "not right" in response.text, f"attempt {attempt}"
+
+    # The fifth starts the pause.
+    fifth = await client.post("/admin/login", data={"password": "guess5"})
+    assert fifth.status_code == 401
+    assert "Too many wrong passwords" in fifth.text
+
+    # And the right password is refused too, so the lockout cannot be stepped around by
+    # guessing until you happen to be right.
+    correct = await client.post("/admin/login", data={"password": PASSWORD})
+    assert correct.status_code == 401
+    assert "Too many wrong passwords" in correct.text
+
+    lockout.reset()
+
+
+async def test_the_right_password_clears_the_count(client):
+    from app.admin import lockout
+
+    lockout.reset()
+
+    for attempt in range(3):
+        await client.post("/admin/login", data={"password": f"guess{attempt}"})
+
+    signed_in = await client.post("/admin/login", data={"password": PASSWORD})
+    assert signed_in.status_code == 303
+
+    # Somebody who fumbled their password twice and then got it right starts clean, rather
+    # than being two tries from a lockout for the next quarter of an hour.
+    for attempt in range(4):
+        response = await client.post("/admin/login", data={"password": f"again{attempt}"})
+        assert "not right" in response.text, f"attempt {attempt}"
+
+    lockout.reset()
+
+
+async def test_a_lockout_is_per_address_not_global(client):
+    """One person fumbling must not lock out the rest of the building."""
+    from app.admin import lockout
+
+    lockout.reset()
+
+    for attempt in range(6):
+        lockout.record_failure("172.24.61.50")
+
+    assert lockout.seconds_remaining("172.24.61.50") > 0
+    assert lockout.seconds_remaining("172.24.61.51") == 0
+
+    lockout.reset()
+
+
+async def test_staff_sign_in_is_not_affected_by_the_hr_lockout(client):
+    # Staff do not use a password at all, so a locked-out HR login must not stop somebody
+    # checking their own hours.
+    from app.admin import lockout
+
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    lockout.reset()
+
+    for attempt in range(6):
+        await client.post("/admin/login", data={"password": f"guess{attempt}"})
+
+    signed_in = await client.post("/me/signin", files={"photo": upload("alice-front.jpg")})
+    assert signed_in.status_code == 303
+
+    lockout.reset()

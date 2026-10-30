@@ -37,7 +37,7 @@ from fastapi.templating import Jinja2Templates
 
 from sqlalchemy import select
 
-from app.admin import queries
+from app.admin import lockout, queries
 from app.api.deps import ImageStoreDep, SessionDep, SettingsDep, TenantDep
 from app.core.enums import AttendanceDecision, AttendanceDirection, EnrollmentStatus
 from app.core.templating import TEMPLATE_DIR, register_filters
@@ -137,11 +137,9 @@ async def sign_in(
     if not dashboard_enabled(settings):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "The dashboard is not switched on.")
 
-    # Fixed-time comparison: a plain equality check leaks the password through timing.
-    if not hmac.compare_digest(password.encode(), settings.admin_ui_password.encode()):
-        client = request.client.host if request.client else "unknown"
-        logger.warning("Failed dashboard sign-in from %s", client)
+    client = request.client.host if request.client else "unknown"
 
+    def refuse(message: str) -> Response:
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -149,11 +147,34 @@ async def sign_in(
                 "page": "login",
                 "title": "Sign in",
                 "show_nav": False,
-                "error": "That password is not right.",
+                "error": message,
             },
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    # Checked before the password is even looked at, so a locked-out caller learns nothing
+    # from how long the answer takes.
+    waiting = lockout.seconds_remaining(client)
+
+    if waiting:
+        logger.warning("Dashboard sign-in from %s is locked out for %ds", client, waiting)
+        return refuse(
+            f"Too many wrong passwords. Try again in {max(1, waiting // 60)} minutes."
+        )
+
+    # Fixed-time comparison: a plain equality check leaks the password through timing.
+    if not hmac.compare_digest(password.encode(), settings.admin_ui_password.encode()):
+        logger.warning("Failed dashboard sign-in from %s", client)
+        locked_for = lockout.record_failure(client)
+
+        if locked_for:
+            return refuse(
+                f"Too many wrong passwords. Try again in {locked_for // 60} minutes."
+            )
+
+        return refuse("That password is not right.")
+
+    lockout.record_success(client)
     request.session[SESSION_KEY] = datetime.now().astimezone().isoformat()
 
     return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
