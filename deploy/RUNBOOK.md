@@ -272,3 +272,22 @@ Two ways out, in order of preference:
 
 Clicking through the warning works but teaches people to ignore certificate warnings, which is
 a habit worth not creating.
+
+For one PC in the meantime, `deploy\trust-certificate.cmd` adds the certificate to the trusted
+list for whoever runs it. No administrator rights, nobody else on the machine is affected, and
+`deploy\untrust-certificate.cmd` reverses it. Chrome has to be closed completely and reopened
+afterwards, not just the tab.
+
+It is safe here for a specific reason worth understanding rather than taking on trust: the
+certificate is self-signed and is **not** a certificate authority, so it can only ever vouch
+for this one server. Installing a real CA certificate would mean something very different - it
+could vouch for any site at all.
+
+Verify before trusting. The thumbprint should be:
+
+```
+86C8A13ECCEBDBE19416DB9B873D86A9735B6FD3
+```
+
+This fixes one PC only. Every phone or laptop that opens the dashboard needs the same thing,
+which is the argument for routing the dashboard through Caddy instead.
