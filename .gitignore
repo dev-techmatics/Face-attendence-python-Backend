@@ -33,3 +33,11 @@ _install.log
 tests/fixtures/*.jpg
 tests/fixtures/*.png
 models/MODELS.txt
+
+# ---- Deployment secrets and local data -------------------------------------
+# .env.production holds the API keys; API-KEYS.txt is a password store; certs/ holds a
+# private key; data/ holds face photographs.
+.env.production
+deploy/API-KEYS.txt
+deploy/certs/
+data/

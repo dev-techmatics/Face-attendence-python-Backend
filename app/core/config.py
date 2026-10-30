@@ -279,6 +279,11 @@ class Settings(BaseSettings):
     #: open would let any website post to the attendance endpoint with a stolen key.
     cors_allowed_origins: list[str] = Field(default_factory=list)
 
+    #: CIDR ranges allowed to reach the API at all. Empty disables the check, which is right
+    #: for a test run and wrong for a deployment: biometric data must not leave the office, so
+    #: the production environment file sets this explicitly.
+    trusted_networks: list[str] = Field(default_factory=list)
+
     #: Per-device fixed window on the attendance endpoint.
     attendance_rate_limit_per_minute: int = 60
 
@@ -425,6 +430,15 @@ def current_environment() -> str:
     )
 
 
+def env_file() -> str:
+    """Which dotenv file to read.
+
+    ``FA_ENV_FILE`` lets a deployment point at ``.env.production`` without exporting every
+    variable by hand, and keeps the service and Alembic reading the same file.
+    """
+    return os.environ.get("FA_ENV_FILE", ".env")
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Build the settings once per process.
@@ -432,7 +446,7 @@ def get_settings() -> Settings:
     Validation runs here, so a bad threshold stops the deploy rather than surfacing as every
     employee being rejected at the morning rush.
     """
-    return Settings()
+    return Settings(_env_file=env_file())
 
 
 def reset_settings_cache() -> None:

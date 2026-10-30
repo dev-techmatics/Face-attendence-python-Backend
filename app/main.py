@@ -18,6 +18,7 @@ from sqlalchemy import text
 
 from app.api.errors import register_exception_handlers
 from app.api.routers import attendance, diagnostics, persons, registration
+from app.api.trusted_network import TrustedNetworkMiddleware
 from app.core.clock import SystemClock
 from app.core.config import Settings, get_settings
 from app.core.errors import FaceError, FaceProcessingException
@@ -196,6 +197,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     if not settings.is_development:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+
+    # Added last, so it runs first: an address outside the company network is turned away
+    # before authentication, rate limiting or any route code sees the request.
+    app.add_middleware(TrustedNetworkMiddleware, networks=settings.trusted_networks)
 
     app.include_router(persons.router)
     app.include_router(registration.router)

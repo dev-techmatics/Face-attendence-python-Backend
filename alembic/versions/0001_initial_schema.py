@@ -72,10 +72,10 @@ def upgrade() -> None:
         sa.Column("Pose", sa.Integer(), nullable=False),
         sa.Column("ProviderId", sa.String(length=128), nullable=False),
         sa.Column("Dimension", sa.Integer(), nullable=False),
-        # A 512-d float32 embedding is 2048 bytes. The cap leaves room for larger models and
-        # for provider-managed references without reaching for varbinary(max), which would
-        # push the payload off-row and make the candidate scan noticeably slower.
-        sa.Column("TemplateData", sa.LargeBinary(length=8192), nullable=False),
+        # A 512-d float32 embedding is 2048 bytes. 8000 is the largest a SQL Server
+        # varbinary can be; past that it becomes varbinary(max), which pushes the payload
+        # off-row and makes the candidate scan noticeably slower.
+        sa.Column("TemplateData", sa.LargeBinary(length=8000), nullable=False),
         sa.Column("QualityScore", sa.Float(), nullable=False),
         sa.Column("DetectionScore", sa.Float(), nullable=False),
         sa.Column("ImageObjectKey", sa.String(length=512), nullable=False),
@@ -145,7 +145,9 @@ def upgrade() -> None:
         sa.Column("ProcessingMs", sa.Integer(), nullable=False),
         # Attendance history outlives the person record on purpose: deleting an employee must
         # not silently rewrite last quarter of attendance.
-        sa.ForeignKeyConstraint(["PersonId"], ["People.Id"], ondelete="RESTRICT"),
+        # NO ACTION rather than RESTRICT: SQL Server has no RESTRICT keyword, and NO ACTION
+        # has the behaviour wanted here - the delete is rejected, not cascaded.
+        sa.ForeignKeyConstraint(["PersonId"], ["People.Id"], ondelete="NO ACTION"),
         sa.PrimaryKeyConstraint("Id"),
     )
 

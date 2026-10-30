@@ -1,0 +1,158 @@
+# Face Attendance backend — deployment runbook
+
+This machine (`QA-PLAYWRIGHT`, office LAN `172.24.61.0/24`) runs the Python Face Attendance
+backend. Everything here is free: SQL Server **Express**, a self-signed certificate, and a
+scheduled task. No cloud service, no licence to buy.
+
+| | |
+| --- | --- |
+| Base URL | `https://172.24.61.79:8443` |
+| Application | `E:\Fa-py` |
+| Database | `.\SQLEXPRESS`, database `FaceAttendance`, Windows integrated auth |
+| Image store | `E:\Fa-py\data\faces` |
+| Logs | `E:\Fa-py\data\logs\server.log` |
+| Config | `E:\Fa-py\.env.production` (holds API keys — not in git) |
+| API keys | `E:\Fa-py\deploy\API-KEYS.txt` (not in git) |
+| Recognition | ONNX, SCRFD `det_500m` + ArcFace `w600k_mbf`, 512-d |
+
+## Why these choices
+
+**Port 8443, not 443.** 443 on this machine already belongs to the Caddy container of the
+*other* face-attendance deployment (`D:\face-attendance` + `D:\compreface`, which the iOS app
+points at), and 80 is held by Windows' own HTTP.sys. Taking 443 would have meant stopping a
+running service, so this one sits beside it. If you want this backend to *replace* CompreFace,
+that is a deliberate switch-over, not something to do by accident — see "Moving to 443" below.
+
+**`.\SQLEXPRESS`, not the default instance.** The default instance (`QA-PLAYWRIGHT`) is
+**Developer Edition**: free, but licensed for development and test only, so using it to run a
+real attendance system would breach its licence. It is also Acumatica's. `.\SQLEXPRESS` is
+Express Edition — free for production, capped at 10 GB per database, which is far more than
+this needs: a template is 2 KB, so 50 staff × 3 poses is 300 KB, and the photographs live on
+disk rather than in the database.
+
+**A self-signed certificate.** No public CA will issue for a private IP and there is no
+budget for a domain. The warning a browser shows is the untrusted issuer, not a broken
+connection — the traffic is TLS 1.3 either way, and that matters because the API key travels
+in a header where anyone on the LAN could otherwise read it. Install
+`deploy\certs\server.crt` into *Trusted Root Certification Authorities* on the kiosks to
+silence the warning.
+
+**An application-level network allowlist.** The standing requirement is that this is reachable
+only from the company network. Windows Firewall is **disabled** on the office adapter here, so
+the firewall cannot enforce it; `FA_TRUSTED_NETWORKS` does. Verified: a request arriving on the
+Tailscale or VirtualBox interface gets `403 untrusted_network`, while the office LAN reaches
+authentication. `/health` stays open from anywhere so monitoring does not need an allowlist
+entry — it reveals nothing but liveness.
+
+## Day-to-day
+
+Start, stop, restart:
+
+```bash
+E:\Fa-py\deploy\start-server.cmd
+```
+
+```bash
+E:\Fa-py\deploy\stop-server.cmd
+```
+
+Is it up?
+
+```bash
+curl -k https://172.24.61.79:8443/health
+```
+
+What engine and thresholds are live:
+
+```bash
+curl -k -H "X-Api-Key: <admin key>" https://172.24.61.79:8443/api/v1/diagnostics/provider
+```
+
+Logs:
+
+```bash
+powershell -Command "Get-Content E:\Fa-py\data\logs\server.log -Tail 40 -Wait"
+```
+
+## Still to do — needs Administrator
+
+Autostart is **not** installed. Run this **as Administrator**, once:
+
+```bash
+E:\Fa-py\deploy\install-autostart.cmd
+```
+
+Elevated it registers an at-boot task running as SYSTEM, so the backend comes up after an
+unattended reboot. Run without elevation and you get a per-user at-logon task instead — which
+means the kiosks stay down until somebody signs in to this PC, and auto sign-in is off here
+(deliberately). Until this is done, **the service does not survive a reboot.**
+
+Two more things worth doing while elevated:
+
+- **Reserve the IP.** `172.24.61.79` is DHCP. If the lease moves, every kiosk loses the
+  backend and the certificate's IP entry stops matching. Set a reservation on the router.
+- **Consider re-enabling Windows Firewall** on the office adapter and allowing only 8443 from
+  `172.24.61.0/24`. The app-level allowlist already covers this, but defence in depth is
+  cheap and a firewall rule protects ports the application does not know about.
+
+## Updating the code
+
+```bash
+cd /d E:\Fa-py && git pull && .venv\Scripts\python.exe -m pytest -q
+```
+
+```bash
+E:\Fa-py\deploy\migrate.cmd
+```
+
+```bash
+E:\Fa-py\deploy\stop-server.cmd && E:\Fa-py\deploy\start-server.cmd
+```
+
+Migrations are deliberately **not** run at startup: two instances starting at once would race
+each other through the same schema change. `migrate.cmd` is the only thing that changes the
+schema.
+
+## Rotating an API key
+
+Both lists accept several keys, so this is a zero-downtime operation:
+
+1. Add the new key alongside the old one in `.env.production`.
+2. Restart. Move the kiosks across.
+3. Remove the old key. Restart again.
+
+Device keys can only mark attendance. Admin keys can read stored face photographs — treat them
+accordingly and never put one on a kiosk.
+
+## Backups
+
+Nothing is backed up yet. What matters, in order:
+
+1. `FaceAttendance` database — the attendance register is the record of who was present, and
+   it is not re-derivable.
+2. `E:\Fa-py\data\faces\enrollments` — losing these means re-enrolling everybody in person.
+3. `.env.production` and `deploy\certs` — losing the keys locks out every kiosk.
+
+Probe frames under `data\faces\probes` are expendable; they self-delete after 30 days.
+
+A SQL Express instance has no Agent to schedule a backup job, so this needs a scheduled task
+running `sqlcmd ... BACKUP DATABASE`. Not set up — raise it when you want it.
+
+## Moving to 443 (only if replacing CompreFace)
+
+443 is held by the Docker/Caddy stack of the older deployment. To hand it over:
+
+1. Stop that stack: `cd D:\face-attendance && docker compose down`.
+2. Change `--port 8443` to `--port 443` in `start-server.cmd`.
+3. Repoint the iOS app's base URL and re-enrol: CompreFace templates are **not**
+   interchangeable with ArcFace embeddings, so every person must be captured again.
+
+Step 3 is the expensive one. Do not start it on a Friday.
+
+## Data protection
+
+Face templates and the stored captures are biometric personal data under India's DPDP Act and
+GDPR. Everything stays on this machine: the ONNX provider sends nothing to any third party,
+which is the main reason it is the configured engine rather than AWS Rekognition. The volume
+holding `E:\Fa-py\data` is not encrypted — worth fixing with BitLocker if the machine could
+ever leave the office.

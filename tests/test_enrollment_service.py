@@ -54,7 +54,7 @@ class Harness:
             FaceTemplate.person_id == person_id
         )
         if active_only:
-            stmt = stmt.where(FaceTemplate.is_active.is_(True))
+            stmt = stmt.where(FaceTemplate.is_active == True)  # noqa: E712
         return int((await self.session.execute(stmt)).scalar_one())
 
     async def any_people(self, **filters) -> bool:

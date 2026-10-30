@@ -1,4 +1,9 @@
-"""Reads and writes for :class:`~app.domain.models.Person`."""
+"""Reads and writes for :class:`~app.domain.models.Person`.
+
+``is_active == True`` rather than ``.is_(True)`` throughout: SQLAlchemy renders ``.is_(True)``
+as ``IS 1``, which SQL Server rejects outright - T-SQL has no ``IS <value>``, only ``IS NULL``.
+SQLite accepts it, so the difference only shows against a real SQL Server.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ class PersonRepository:
 
         if include_templates:
             stmt = stmt.options(
-                selectinload(Person.face_templates.and_(FaceTemplate.is_active.is_(True)))
+                selectinload(Person.face_templates.and_(FaceTemplate.is_active == True))
             )
 
         return (await self._session.execute(stmt)).scalars().first()
@@ -36,7 +41,7 @@ class PersonRepository:
 
         if include_templates:
             stmt = stmt.options(
-                selectinload(Person.face_templates.and_(FaceTemplate.is_active.is_(True)))
+                selectinload(Person.face_templates.and_(FaceTemplate.is_active == True))
             )
 
         return (await self._session.execute(stmt)).scalars().first()

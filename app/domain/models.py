@@ -31,10 +31,12 @@ from app.core.enums import (
 from app.db.base import Base
 from app.db.types import UtcDateTime
 
-#: A 512-d float32 embedding is 2048 bytes. The cap leaves room for larger models and for
-#: provider-managed references without reaching for varbinary(max), which would push the
-#: payload off-row and make the candidate scan noticeably slower.
-MAX_TEMPLATE_BYTES = 8192
+#: A 512-d float32 embedding is 2048 bytes. 8000 is the largest a SQL Server ``varbinary``
+#: can be; past that the column becomes ``varbinary(max)``, which pushes the payload off-row
+#: and makes the candidate scan noticeably slower. That is what the original asked for in a
+#: comment but did not get: it specified 8192, so EF Core emitted ``varbinary(max)`` anyway.
+#: 8000 still leaves room for a 2000-dimension model and for provider-managed references.
+MAX_TEMPLATE_BYTES = 8000
 
 
 class Person(Base):
@@ -98,7 +100,7 @@ class Person(Base):
 
     # Attendance history outlives the person record on purpose: deleting an employee must not
     # silently rewrite last quarter of attendance. passive_deletes="all" leaves the decision
-    # to the database, whose foreign key is ON DELETE RESTRICT.
+    # to the database, whose foreign key is ON DELETE NO ACTION - the delete is rejected.
     attendance_events: Mapped[list["AttendanceEvent"]] = relationship(
         back_populates="person",
         passive_deletes="all",
@@ -210,7 +212,7 @@ class AttendanceEvent(Base):
 
     #: Null when a 1:N identification found nobody.
     person_id: Mapped[int | None] = mapped_column(
-        "PersonId", Integer, ForeignKey("People.Id", ondelete="RESTRICT")
+        "PersonId", Integer, ForeignKey("People.Id", ondelete="NO ACTION")
     )
     person: Mapped[Person | None] = relationship(back_populates="attendance_events", lazy="raise")
 

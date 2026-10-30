@@ -1,4 +1,9 @@
-"""Reads and writes for :class:`~app.domain.models.FaceTemplate`."""
+"""Reads and writes for :class:`~app.domain.models.FaceTemplate`.
+
+``is_active == True`` rather than ``.is_(True)`` throughout: SQLAlchemy renders ``.is_(True)``
+as ``IS 1``, which SQL Server rejects outright - T-SQL has no ``IS <value>``, only ``IS NULL``.
+SQLite accepts it, so the difference only shows against a real SQL Server.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ class FaceTemplateRepository:
     async def get_active_for_person(self, person_id: int) -> list[FaceTemplate]:
         stmt = (
             select(FaceTemplate)
-            .where(FaceTemplate.person_id == person_id, FaceTemplate.is_active.is_(True))
+            .where(FaceTemplate.person_id == person_id, FaceTemplate.is_active == True)
             .order_by(FaceTemplate.pose)
         )
         return list((await self._session.execute(stmt)).scalars().all())
@@ -26,7 +31,7 @@ class FaceTemplateRepository:
         stmt = select(FaceTemplate).where(
             FaceTemplate.person_id == person_id,
             FaceTemplate.pose == pose,
-            FaceTemplate.is_active.is_(True),
+            FaceTemplate.is_active == True,
         )
         return (await self._session.execute(stmt)).scalars().first()
 
@@ -61,7 +66,7 @@ class FaceTemplateRepository:
             )
             .join(Person, Person.id == FaceTemplate.person_id)
             .where(
-                FaceTemplate.is_active.is_(True),
+                FaceTemplate.is_active == True,
                 FaceTemplate.provider_id == provider_id,
                 Person.tenant_id == tenant_id,
                 Person.status == PersonStatus.Active,
@@ -95,7 +100,7 @@ class FaceTemplateRepository:
             FaceTemplate.image_object_key,
         ).where(
             FaceTemplate.person_id == person_id,
-            FaceTemplate.is_active.is_(True),
+            FaceTemplate.is_active == True,
             FaceTemplate.provider_id == provider_id,
         )
 
@@ -127,7 +132,7 @@ class FaceTemplateRepository:
             .select_from(FaceTemplate)
             .where(
                 FaceTemplate.person_id == person_id,
-                FaceTemplate.is_active.is_(True),
+                FaceTemplate.is_active == True,
                 FaceTemplate.pose != exclude_pose,
                 FaceTemplate.image_sha256 == sha256,
             )
