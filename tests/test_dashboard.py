@@ -996,3 +996,116 @@ async def test_acting_on_somebody_who_is_not_there_is_a_404(client):
     assert (
         await client.post("/admin/people/NOBODY/delete", data={"confirm": "delete"})
     ).status_code == 404
+
+
+# ---- the register, read as one line per person per day ------------------------------------
+
+
+async def test_a_full_day_is_one_line_with_in_out_and_hours(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T09:00:00Z")
+    await punch(client, "TS4012", "alice", "check_out", "2026-10-30T17:30:00Z")
+
+    attempts = await client.get("/admin/register")
+    days = await client.get("/admin/register?view=days")
+
+    # Two rows in the log, one row in the day view - that is the whole difference.
+    assert attempts.text.count("TS4012") == 2
+    assert days.text.count("TS4012") == 1
+
+    assert "One line per person per day" in days.text
+    assert "Alice Example" in days.text
+
+
+async def test_the_hours_skip_a_break_that_was_punched_out_and_back_in(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    # Written directly, because the server stamps the punch with its own clock - the
+    # captured_at the kiosk sends does not set the time, so four calls would land in the
+    # same second.
+    yesterday = datetime.now(timezone.utc).replace(
+        hour=3, minute=30, second=0, microsecond=0
+    ) - timedelta(days=1)
+
+    # Nine to five with an hour out at lunch: seven hours at work, not eight.
+    await backdate(
+        "TS4012",
+        [
+            (yesterday, yesterday + timedelta(hours=4)),
+            (yesterday + timedelta(hours=5), yesterday + timedelta(hours=8)),
+        ],
+    )
+
+    day = (yesterday.astimezone().date()).isoformat()
+    page = await client.get(f"/admin/register?view=days&from={day}&to={day}")
+
+    assert page.text.count("TS4012") == 1
+    assert "7h" in page.text
+    assert "8h" not in page.text
+
+
+async def test_a_missing_punch_is_flagged_not_guessed(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T09:00:00Z")
+
+    page = await client.get("/admin/register?view=days")
+
+    # Still in the building as far as the system knows, so no invented leaving time.
+    assert "Still in" in page.text
+
+
+async def test_failures_are_left_out_of_the_day_view_but_stay_in_the_log(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T09:00:00Z")
+
+    # A stranger at the kiosk: recorded as a failure, attached to nobody.
+    await client.post(
+        "/v1/attendance/punch",
+        headers=KIOSK,
+        data={
+            "employee_id": "TS4012",
+            "type": "check_out",
+            "captured_at": "2026-10-30T17:00:00Z",
+        },
+        files={"face": upload("stranger.jpg")},
+    )
+
+    assert "Face did not match" in (await client.get("/admin/register")).text
+    # A failure has no other half, so counting it as a departure would be an invention.
+    assert "Face did not match" not in (await client.get("/admin/register?view=days")).text
+
+
+async def test_the_two_views_are_linked_both_ways(client):
+    await signed_in_hr(client)
+
+    attempts = await client.get("/admin/register")
+    assert "view=days" in attempts.text
+
+    days = await client.get("/admin/register?view=days")
+    assert "In and out per day" in days.text
+
+
+async def test_the_filters_survive_switching_view(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await enrol(client, "TS4013", "Bob Example", "bob")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T09:00:00Z")
+    await punch(client, "TS4013", "bob", "check_in", "2026-10-30T09:05:00Z")
+
+    page = await client.get("/admin/register?view=days&q=TS4013")
+
+    assert "Bob Example" in page.text
+    assert "Alice Example" not in page.text
+    # The search has to be carried in the link back, or switching view loses it.
+    assert "q=TS4013" in page.text
+
+
+async def test_the_day_view_needs_a_sign_in(client):
+    response = await client.get("/admin/register?view=days")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/login"

@@ -90,6 +90,13 @@
   .link { color: var(--accent); font: inherit; text-decoration: underline; }
   .link.warn-link { color: var(--bad); }
   tr.dim td { color: var(--muted); }
+  /* Two readings of the same data, so links rather than a filter control: the choice
+     changes what a row means, not which rows are shown. */
+  .tabs { display: flex; gap: 4px; margin: 0 0 16px; flex-wrap: wrap; }
+  .tabs a { padding: 7px 12px; border-radius: 7px; text-decoration: none;
+            color: var(--muted); border: 1px solid var(--line); background: var(--card);
+            font-size: 14px; }
+  .tabs a.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   .note { color: var(--muted); font-size: 13px; margin-top: -8px; margin-bottom: 20px; }
   .cause { color: var(--muted); font-size: 13px; white-space: normal; }
   .hours { padding: 14px 16px; }

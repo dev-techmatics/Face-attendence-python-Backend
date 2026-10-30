@@ -768,3 +768,69 @@ async def person_footprint(
         first_punch=first_punch,
         last_punch=last_punch,
     )
+
+
+@dataclass(frozen=True)
+class PersonDay:
+    """One person, one day, on one line: in, out and the hours between them."""
+
+    external_id: str
+    full_name: str
+    worked: WorkedDay
+
+
+async def worked_days(
+    session: AsyncSession,
+    tenant: str,
+    window: DayWindow,
+    search: str | None = None,
+) -> list[PersonDay]:
+    """The register collapsed to one row per person per day.
+
+    The same punches the log shows, paired up. Only accepted ones: a failed attempt has no
+    other half to pair with and would silently become an arrival that never happened.
+
+    Pairing is :func:`_pair_into_days`, the same code behind the monthly figures and the
+    staff page, so an hour counted here is the hour counted everywhere else.
+    """
+    filters = [
+        AttendanceEvent.tenant_id == tenant,
+        AttendanceEvent.decision == AttendanceDecision.Accepted,
+        AttendanceEvent.created_at_utc >= window.start_utc,
+        AttendanceEvent.created_at_utc < window.end_utc,
+    ]
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        filters.append(Person.full_name.like(term) | Person.external_id.like(term))
+
+    rows = (
+        await session.execute(
+            select(
+                Person.external_id,
+                Person.full_name,
+                AttendanceEvent.created_at_utc,
+                AttendanceEvent.direction,
+            )
+            .join(Person, Person.id == AttendanceEvent.person_id)
+            .where(*filters)
+            .order_by(AttendanceEvent.created_at_utc)
+        )
+    ).all()
+
+    by_person: dict[tuple[str, str], list[tuple[datetime, int]]] = {}
+
+    for external_id, full_name, when, direction in rows:
+        by_person.setdefault((external_id, full_name), []).append((when, direction))
+
+    days = [
+        PersonDay(external_id=external_id, full_name=full_name, worked=worked)
+        for (external_id, full_name), events in by_person.items()
+        for worked in _pair_into_days(events)
+    ]
+
+    # Newest day first, and within a day by name - so reverse the day only. Sorting the
+    # tuple would run the names backwards too.
+    days.sort(key=lambda d: d.full_name)
+    days.sort(key=lambda d: d.worked.day, reverse=True)
+    return days

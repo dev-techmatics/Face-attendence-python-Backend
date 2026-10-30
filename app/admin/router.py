@@ -273,8 +273,12 @@ async def register(
     search = params.get("q") or None
     only_failures = bool(params.get("failures"))
 
+    # Two ways to read the same punches. "attempts" is the log - one row each, failures
+    # included, which is what makes it evidence. "days" pairs them into one row per person
+    # per day, which is what somebody asking "when did Krish come and go" actually wants.
+    paired = params.get("view") == "days"
+
     window = queries.DayWindow.for_range(first, last)
-    rows = await queries.register_rows(session, tenant, window, search, only_failures)
 
     query_string = f"from={first}&to={last}"
     if search:
@@ -282,12 +286,36 @@ async def register(
     if only_failures:
         query_string += "&failures=1"
 
+    if paired:
+        days = await queries.worked_days(session, tenant, window, search)
+
+        return _page(
+            request,
+            "register.html",
+            "register",
+            "Register",
+            window=window,
+            paired=True,
+            days=days,
+            rows=[],
+            date_from=first.isoformat(),
+            date_to=last.isoformat(),
+            search=search,
+            only_failures=only_failures,
+            query_string=query_string,
+            retention_days=settings.face.probe_image_retention_days,
+        )
+
+    rows = await queries.register_rows(session, tenant, window, search, only_failures)
+
     return _page(
         request,
         "register.html",
         "register",
         "Register",
         window=window,
+        paired=False,
+        days=[],
         rows=_register_view(rows),
         date_from=first.isoformat(),
         date_to=last.isoformat(),

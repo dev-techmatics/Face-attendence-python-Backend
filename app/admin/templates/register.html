@@ -1,24 +1,69 @@
 {% extends "base.html" %}
 {% block body %}
 <h1>Attendance register</h1>
-<p class="when">{{ window.label }} &middot; {{ rows | length }} attempt{{ '' if rows | length == 1 else 's' }}</p>
+<p class="when">{{ window.label }} &middot;
+  {% if paired %}{{ days | length }} day{{ '' if days | length == 1 else 's' }} worked
+  {% else %}{{ rows | length }} attempt{{ '' if rows | length == 1 else 's' }}{% endif %}</p>
+
+<div class="tabs">
+  <a href="/admin/register?{{ query_string }}" class="{{ '' if paired else 'on' }}">Every attempt</a>
+  <a href="/admin/register?{{ query_string }}&amp;view=days" class="{{ 'on' if paired else '' }}">In and out per day</a>
+</div>
 
 <div class="panel">
   <form class="filters" method="get" action="/admin/register">
+    {% if paired %}<input type="hidden" name="view" value="days">{% endif %}
     <div><label for="from">From</label><input type="date" id="from" name="from" value="{{ date_from }}"></div>
     <div><label for="to">To</label><input type="date" id="to" name="to" value="{{ date_to }}"></div>
     <div><label for="q">Name or ID</label><input type="search" id="q" name="q" value="{{ search or '' }}" placeholder="anyone"></div>
+    {% if not paired %}
     <div><label for="failures">Show</label>
       <select id="failures" name="failures" style="padding:7px 9px;border:1px solid var(--line);border-radius:7px;font:inherit;background:#fff">
         <option value="">Everything</option>
         <option value="1" {{ 'selected' if only_failures }}>Failures only</option>
       </select>
     </div>
+    {% endif %}
     <button type="submit">Show</button>
     <a class="btn ghost" href="/admin/register.csv?{{ query_string }}">Download for Excel</a>
   </form>
 </div>
 
+{% if paired %}
+<div class="panel">
+  <h2>One line per person per day</h2>
+  {% if days %}
+  <table>
+    <thead><tr><th>Day</th><th>Name</th><th>ID</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr></thead>
+    <tbody>
+    {% for d in days %}
+      <tr>
+        <td>{{ d.worked.day | day }}</td>
+        <td>{{ d.full_name }}</td>
+        <td>{{ d.external_id }}</td>
+        <td>{{ d.worked.first_in | clock }}</td>
+        <td>{{ d.worked.last_out | clock or '—' }}</td>
+        <td>{{ d.worked.hours | hours }}</td>
+        <td>
+          {% if d.worked.open_now %}<span class="tag t-in">Still in</span>
+          {% elif d.worked.unpaired %}<span class="tag t-bad">Punch missing</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Nobody worked in this period.</p>
+  {% endif %}
+</div>
+
+<p class="note">Hours are the time between each in and the out that followed it, so a lunch
+  break punched out and back in is not counted as time at work. &ldquo;Punch missing&rdquo;
+  means somebody forgot one half &mdash; the hours for that day are what could be paired, not
+  a guess. Failed attempts are not here at all, because a failure has no other half to pair
+  with; they are on the <a href="/admin/register?{{ query_string }}">Every attempt</a> tab.</p>
+
+{% else %}
 <div class="panel">
   <h2>Every attempt, newest first</h2>
   {% if rows %}
@@ -46,9 +91,12 @@
   {% endif %}
 </div>
 
-<p class="note">Failed attempts are kept on purpose: they are the evidence when somebody says
-  the machine did not recognise them. Photos are only loaded when you click
-  &ldquo;show&rdquo;, and are deleted automatically after
-  {{ retention_days }} days. &ldquo;Show&rdquo; also has a delete button, for when somebody
-  asks for their photo to go sooner — that removes the picture and nothing else.</p>
+<p class="note">One row per attempt, which is why somebody who came and went appears twice.
+  For their day on a single line, use <a href="/admin/register?{{ query_string }}&amp;view=days">In
+  and out per day</a>. Failed attempts are kept on purpose: they are the evidence when
+  somebody says the machine did not recognise them. Photos are only loaded when you click
+  &ldquo;show&rdquo;, and are deleted automatically after {{ retention_days }} days.
+  &ldquo;Show&rdquo; also has a delete button, for when somebody asks for their photo to go
+  sooner &mdash; that removes the picture and nothing else.</p>
+{% endif %}
 {% endblock %}
