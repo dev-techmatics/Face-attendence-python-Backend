@@ -32,9 +32,9 @@
   <form method="post" action="/admin/people/{{ person.external_id }}/delete">
     <div class="filters" style="border-top:1px solid var(--line)">
       <div>
-        <label for="confirm">Type <strong>{{ person.external_id }}</strong> to confirm</label>
+        <label for="confirm">Type <strong>delete</strong> to confirm</label>
         <input type="text" id="confirm" name="confirm" autocomplete="off"
-               value="{{ typed or '' }}" placeholder="{{ person.external_id }}">
+               value="{{ typed or '' }}" placeholder="delete">
       </div>
       <button type="submit" class="danger">Delete permanently</button>
       <a class="btn ghost" href="/admin/people">Cancel</a>
@@ -42,7 +42,7 @@
   </form>
 
   {% if typed is not none %}
-  <p class="flash bad" style="margin:0 16px 16px">That is not {{ person.external_id }}.
+  <p class="flash bad" style="margin:0 16px 16px">Type the word <strong>delete</strong>.
     Nothing has been deleted.</p>
   {% endif %}
 </div>

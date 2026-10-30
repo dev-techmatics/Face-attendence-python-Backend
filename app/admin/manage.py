@@ -15,7 +15,7 @@ design:
   they come back, or clicked on the wrong row.
 * **Delete permanently** erases the person, their face data and their whole attendance
   history. It is the privacy-law erasure, and it is the only one that cannot be undone, so
-  it asks for the employee ID to be typed out before it will do anything.
+  it asks for the word "delete" to be typed out before it will do anything.
 
 Only the last one needs that friction. Making all three equally annoying would train people
 to click through the warning that matters.
@@ -62,6 +62,11 @@ register_filters(templates)
 FLASH = "flash"
 
 PEOPLE = "/admin/people"
+
+#: Typed out before a permanent delete will run. A plain word rather than the employee id:
+#: it is the same on every row, so it proves intent rather than proving which person - the
+#: screen above it names them and counts what goes.
+CONFIRM_WORD = "delete"
 
 
 def say(request: Request, message: str, kind: str = "ok") -> None:
@@ -270,7 +275,7 @@ async def delete_person(
     if footprint is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "There is no such person.")
 
-    if normalise_employee_id(confirm) != footprint.external_id:
+    if confirm.strip().lower() != CONFIRM_WORD:
         # Not an error to shout about - they are being careful, which is the point.
         return templates.TemplateResponse(
             request=request,

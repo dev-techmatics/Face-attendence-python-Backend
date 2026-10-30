@@ -891,7 +891,7 @@ async def test_the_delete_screen_counts_what_would_be_destroyed(client):
 
     assert page.status_code == 200
     assert "cannot be undone" in page.text
-    assert "to confirm" in page.text
+    assert "Type <strong>delete</strong> to confirm" in page.text
     # It points at the reversible option rather than only warning.
     assert "Remove</em> instead" in page.text
 
@@ -900,7 +900,7 @@ async def test_deleting_does_nothing_until_the_id_is_typed_correctly(client):
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
 
-    for wrong in ("", "TS4013", "ts401"):
+    for wrong in ("", "TS4012", "del", "delete please"):
         response = await client.post("/admin/people/TS4012/delete", data={"confirm": wrong})
 
         assert response.status_code == 400, wrong
@@ -922,8 +922,8 @@ async def test_deleting_erases_the_person_their_face_and_their_history(client):
             await session.execute(select(Person.id).where(Person.external_id == "TS4012"))
         ).scalar_one()
 
-    # Lower case on purpose: normalising the typed id is the point, not its spelling.
-    gone = await client.post("/admin/people/TS4012/delete", data={"confirm": "ts4012"})
+    # Mixed case and stray spaces: somebody typing the word in a hurry still means it.
+    gone = await client.post("/admin/people/TS4012/delete", data={"confirm": "  Delete "})
     assert gone.status_code == 303
 
     people = await client.get("/admin/people")
@@ -955,7 +955,7 @@ async def test_deleting_erases_the_person_their_face_and_their_history(client):
 async def test_a_deleted_id_can_be_used_again(client):
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
-    await client.post("/admin/people/TS4012/delete", data={"confirm": "TS4012"})
+    await client.post("/admin/people/TS4012/delete", data={"confirm": "delete"})
 
     await enrol(client, "TS4012", "Different Person", "bob")
     assert "Different Person" in (await client.get("/admin/people")).text
@@ -968,7 +968,7 @@ async def test_managing_people_needs_a_sign_in(client):
         ("/admin/people/add", {"employee_id": "TS9999", "full_name": "Nobody"}),
         ("/admin/people/TS4012/archive", {}),
         ("/admin/people/TS4012/restore", {}),
-        ("/admin/people/TS4012/delete", {"confirm": "TS4012"}),
+        ("/admin/people/TS4012/delete", {"confirm": "delete"}),
     )
 
     for path, data in posts:
@@ -994,5 +994,5 @@ async def test_acting_on_somebody_who_is_not_there_is_a_404(client):
     assert (await client.post("/admin/people/NOBODY/restore")).status_code == 404
     assert (await client.get("/admin/people/NOBODY/delete")).status_code == 404
     assert (
-        await client.post("/admin/people/NOBODY/delete", data={"confirm": "NOBODY"})
+        await client.post("/admin/people/NOBODY/delete", data={"confirm": "delete"})
     ).status_code == 404
