@@ -99,6 +99,17 @@ async def test_health_matches_the_old_reply(client):
     assert body["employees"] == 0
 
 
+async def test_health_names_which_server_answered(client):
+    """So "which of the two backends am I talking to" is one request, not an afternoon.
+
+    The older .NET build answers this contract with the same wording, down to the error
+    messages, because this one is a port of it.
+    """
+    body = (await client.get("/v1/health")).json()
+
+    assert body["server"] == "face-attendance-python"
+
+
 async def test_health_counts_registered_people(client):
     await register(client)
 

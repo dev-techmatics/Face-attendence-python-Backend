@@ -115,14 +115,44 @@ schema.
 
 ## Rotating an API key
 
-Both lists accept several keys, so this is a zero-downtime operation:
+```
+python deploy
+ew_keys.py            both keys
+python deploy
+ew_keys.py --device   the kiosk key only
+```
 
-1. Add the new key alongside the old one in `.env.production`.
-2. Restart. Move the kiosks across.
-3. Remove the old key. Restart again.
+Then restart. The script writes the new value into `.env.production` and into
+`deploy\API-KEYS.txt`, and the keys it generates avoid a leading dash (shells and config
+parsers eat those) and the characters that look like each other, so they survive being typed
+into a phone and read out down a corridor.
+
+For a changeover with no downtime, both lists accept several keys: add the new one by hand
+alongside the old, restart, move the kiosks across, remove the old one, restart again.
 
 Device keys can only mark attendance. Admin keys can read stored face photographs — treat them
 accordingly and never put one on a kiosk.
+
+### Giving the key to the app team
+
+```
+python deploypp_team_note.py
+```
+
+Writes `deploy\APP-TEAM-NOTE.txt`: the address, the key, and what to check if a request is
+refused. Send it like a password — it contains a live credential, and it is gitignored for
+that reason.
+
+### The trap that will catch somebody again
+
+The older .NET service is still running in Docker on **443** and answers the same `/v1`
+contract with the same wording, down to the error messages, because this service is a port of
+it. An app pointed at `https://172.24.61.79` with no port therefore reaches the old one and
+gets a believable reply — a *different* key works there, and this one comes back
+401 "This device isn't authorised". It looks exactly like a bad key.
+
+`/v1/health` is the one-request answer: this service returns `"server":"face-attendance-python"`
+and the old one has no such field.
 
 ## Backups
 

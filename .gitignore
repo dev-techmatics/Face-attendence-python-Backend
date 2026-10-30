@@ -39,5 +39,7 @@ models/MODELS.txt
 # private key; data/ holds face photographs.
 .env.production
 deploy/API-KEYS.txt
+# Written by deploy/app_team_note.py: a handover note with the kiosk key filled in.
+deploy/APP-TEAM-NOTE.txt
 deploy/certs/
 data/

@@ -65,6 +65,12 @@ EMPLOYEE_ID = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
 
 NO_MATCH = "We couldn't match your face. New here? Tap Register."
 
+#: Names this service in /v1/health. The older .NET build this replaced answers the same
+#: contract with the same wording, so without a marker the two are indistinguishable from the
+#: outside - which is exactly how an app ends up pointed at the wrong one and nobody can tell.
+#: Additive: the app reads success, message and employees, and ignores anything else.
+SERVER_ID = "face-attendance-python"
+
 
 def ok(message: str, **extra) -> JSONResponse:
     return JSONResponse({"success": True, "message": message, **extra})
@@ -127,10 +133,22 @@ async def health(session: SessionDep, tenant: TenantDep) -> JSONResponse:
     except Exception:
         logger.exception("Kiosk health check could not reach the database")
         return JSONResponse(
-            {"success": False, "message": "face service unreachable", "employees": 0}
+            {
+                "success": False,
+                "message": "face service unreachable",
+                "employees": 0,
+                "server": SERVER_ID,
+            }
         )
 
-    return JSONResponse({"success": True, "message": "ok", "employees": int(enrolled)})
+    return JSONResponse(
+        {
+            "success": True,
+            "message": "ok",
+            "employees": int(enrolled),
+            "server": SERVER_ID,
+        }
+    )
 
 
 @router.post("/faces/enroll", summary="Register a face (app contract)")

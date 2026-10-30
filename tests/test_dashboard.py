@@ -533,3 +533,44 @@ async def test_staff_sign_in_is_not_affected_by_the_hr_lockout(client):
     assert signed_in.status_code == 303
 
     lockout.reset()
+
+
+# ---- the pages are a live view, never a cached one ----------------------------------------
+
+
+async def test_hr_pages_are_never_cached(client):
+    """Refreshing has to ask the server, or the board shows a moment that has passed."""
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/login", data={"password": PASSWORD})
+
+    for path in ("/admin", "/admin/register", "/admin/people", "/admin/problems", "/admin/monthly"):
+        response = await client.get(path)
+
+        assert response.status_code == 200, path
+        assert "no-store" in response.headers["cache-control"], path
+
+
+async def test_the_staff_page_and_both_login_pages_are_never_cached(client):
+    # The login pages too: a cached one would be served to the next person at the same
+    # browser, already carrying the previous person's state.
+    for path in ("/me", "/admin/login"):
+        response = await client.get(path)
+
+        assert "no-store" in response.headers["cache-control"], path
+
+
+async def test_a_new_registration_shows_on_the_board_without_a_punch(client):
+    """Somebody who has just registered appears straight away, marked as not arrived.
+
+    This is the question HR asks a minute after a kiosk enrolment: did it take?
+    """
+    await client.post("/admin/login", data={"password": PASSWORD})
+
+    before = await client.get("/admin")
+    assert "Carol Example" not in before.text
+
+    await enrol(client, "TS4099", "Carol Example", "carol")
+
+    after = await client.get("/admin")
+    assert "Carol Example" in after.text
+    assert "TS4099" in after.text

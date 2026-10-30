@@ -20,6 +20,7 @@ from sqlalchemy import text
 from app.api.errors import register_exception_handlers
 from app.admin import router as admin_router
 from app.admin import staff as staff_router
+from app.admin.no_store import NoStoreMiddleware
 from app.api.routers import attendance, compat_v1, diagnostics, persons, registration
 from app.api.trusted_network import TrustedNetworkMiddleware
 from app.core.clock import SystemClock
@@ -227,6 +228,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # showing attendance has no business travelling in clear.
             https_only=not settings.is_development,
         )
+        # A live view of who is in the building, so never a cached one.
+        app.add_middleware(NoStoreMiddleware)
+
         app.include_router(admin_router.router)
         app.include_router(staff_router.router)
         logger.info("Dashboard enabled at /admin (HR) and /me (staff)")
