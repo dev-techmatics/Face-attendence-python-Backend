@@ -690,3 +690,81 @@ async def one_event(
         device=row[6],
         has_photo=bool(row[7]),
     )
+
+
+@dataclass(frozen=True)
+class Footprint:
+    """Everything a permanent delete would destroy, counted before it happens.
+
+    Shown on the confirmation screen. Somebody about to erase a person's record is entitled
+    to see exactly what goes with them, in numbers rather than in a warning sentence.
+    """
+
+    person_id: int
+    external_id: str
+    full_name: str
+    department: str | None
+    status: PersonStatus
+    enrollment_status: EnrollmentStatus
+    photos: int
+    punches: int
+    first_punch: datetime | None
+    last_punch: datetime | None
+
+
+async def person_footprint(
+    session: AsyncSession, tenant: str, external_id: str
+) -> Footprint | None:
+    row = (
+        await session.execute(
+            select(
+                Person.id,
+                Person.external_id,
+                Person.full_name,
+                Person.department,
+                Person.status,
+                Person.enrollment_status,
+            ).where(Person.tenant_id == tenant, Person.external_id == external_id)
+        )
+    ).first()
+
+    if row is None:
+        return None
+
+    person_id = row[0]
+
+    photos = (
+        await session.execute(
+            select(func.count())
+            .select_from(FaceTemplate)
+            .where(FaceTemplate.person_id == person_id)
+        )
+    ).scalar_one()
+
+    # Every event, not just the accepted ones: a rejection is part of the record too, and it
+    # is just as gone afterwards.
+    punches, first_punch, last_punch = (
+        await session.execute(
+            select(
+                func.count(),
+                func.min(AttendanceEvent.created_at_utc),
+                func.max(AttendanceEvent.created_at_utc),
+            ).where(
+                AttendanceEvent.tenant_id == tenant,
+                AttendanceEvent.person_id == person_id,
+            )
+        )
+    ).one()
+
+    return Footprint(
+        person_id=person_id,
+        external_id=row[1],
+        full_name=row[2],
+        department=row[3],
+        status=PersonStatus(row[4]),
+        enrollment_status=EnrollmentStatus(row[5]),
+        photos=int(photos),
+        punches=int(punches),
+        first_punch=first_punch,
+        last_punch=last_punch,
+    )

@@ -41,7 +41,12 @@ from sqlalchemy import select, update
 
 from app.admin import lockout, queries
 from app.api.deps import ImageStoreDep, SessionDep, SettingsDep, TenantDep
-from app.core.enums import AttendanceDecision, AttendanceDirection, EnrollmentStatus
+from app.core.enums import (
+    AttendanceDecision,
+    AttendanceDirection,
+    EnrollmentStatus,
+    PersonStatus,
+)
 from app.core.templating import TEMPLATE_DIR, register_filters
 from app.domain.models import AttendanceEvent
 
@@ -354,6 +359,7 @@ async def people(
             "external_id": row[0],
             "name": row[1],
             "department": row[2],
+            "archived": PersonStatus(row[3]) != PersonStatus.Active,
             "state": queries.ENROLLMENT_LABEL.get(
                 EnrollmentStatus(row[4]), str(row[4])
             ),
@@ -364,7 +370,16 @@ async def people(
         for row in await queries.people_rows(session, tenant)
     ]
 
-    return _page(request, "people.html", "people", "People", rows=rows)
+    return _page(
+        request,
+        "people.html",
+        "people",
+        "People",
+        rows=rows,
+        active=sum(1 for r in rows if not r["archived"]),
+        # Said once, after the write that caused it, and then gone.
+        flash=request.session.pop("flash", None),
+    )
 
 
 @router.get("/problems", response_class=HTMLResponse)

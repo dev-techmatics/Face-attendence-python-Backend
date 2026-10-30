@@ -77,6 +77,19 @@
   .warn strong { display: block; margin-bottom: 4px; }
   .actions { padding: 14px 16px; display: flex; gap: 8px; flex-wrap: wrap;
              border-top: 1px solid var(--line); }
+  /* One sentence after a change, where the eye already is. */
+  .flash { padding: 11px 14px; border-radius: 8px; font-size: 14px; margin: 0 0 16px;
+           background: var(--in-bg); color: var(--in); border: 1px solid #cfe8d9; }
+  .flash.bad { background: var(--bad-bg); color: var(--bad); border-color: #f0d2d2; }
+  /* Row actions read as text until wanted, so the table stays a table and not a wall of
+     buttons - but they are real buttons, because they change something. */
+  .row-actions { display: flex; gap: 12px; align-items: center; }
+  .row-actions form { margin: 0; }
+  button.link { background: none; border: 0; padding: 0; color: var(--accent);
+                font: inherit; cursor: pointer; text-decoration: underline; }
+  .link { color: var(--accent); font: inherit; text-decoration: underline; }
+  .link.warn-link { color: var(--bad); }
+  tr.dim td { color: var(--muted); }
   .note { color: var(--muted); font-size: 13px; margin-top: -8px; margin-bottom: 20px; }
   .cause { color: var(--muted); font-size: 13px; white-space: normal; }
   .hours { padding: 14px 16px; }

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Delete {{ person.full_name }}</h1>
+<p class="when">{{ person.external_id }}{% if person.department %} &middot;
+  {{ person.department }}{% endif %}</p>
+
+<div class="panel">
+  <h2>What this destroys</h2>
+  <table>
+    <tbody>
+      <tr><td>The person</td><td><strong>{{ person.full_name }}</strong>
+        ({{ person.external_id }})</td></tr>
+      <tr><td>Face photos and templates</td><td><strong>{{ person.photos }}</strong></td></tr>
+      <tr><td>Attendance records</td>
+        <td><strong>{{ person.punches }}</strong>
+          {%- if person.punches %}, from {{ person.first_punch | stamp }}
+          to {{ person.last_punch | stamp }}{% endif %}</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warn">
+    <strong>This cannot be undone.</strong>
+    {% if person.punches %}
+    Every hour {{ person.full_name }} has ever been recorded working goes with them. If you
+    only want to stop them clocking in, go back and use <em>Remove</em> instead &mdash; that
+    keeps the record and can be reversed.
+    {% else %}
+    There is no attendance history to lose, but the person and their face data go for good.
+    {% endif %}
+  </div>
+
+  <form method="post" action="/admin/people/{{ person.external_id }}/delete">
+    <div class="filters" style="border-top:1px solid var(--line)">
+      <div>
+        <label for="confirm">Type <strong>{{ person.external_id }}</strong> to confirm</label>
+        <input type="text" id="confirm" name="confirm" autocomplete="off"
+               value="{{ typed or '' }}" placeholder="{{ person.external_id }}">
+      </div>
+      <button type="submit" class="danger">Delete permanently</button>
+      <a class="btn ghost" href="/admin/people">Cancel</a>
+    </div>
+  </form>
+
+  {% if typed is not none %}
+  <p class="flash bad" style="margin:0 16px 16px">That is not {{ person.external_id }}.
+    Nothing has been deleted.</p>
+  {% endif %}
+</div>
+{% endblock %}

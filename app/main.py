@@ -18,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import text
 
 from app.api.errors import register_exception_handlers
+from app.admin import manage as manage_router
 from app.admin import router as admin_router
 from app.admin import staff as staff_router
 from app.admin.no_store import NoStoreMiddleware
@@ -232,6 +233,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_middleware(NoStoreMiddleware)
 
         app.include_router(admin_router.router)
+        # Everything that changes people lives in its own module, after the read-only one.
+        app.include_router(manage_router.router)
         app.include_router(staff_router.router)
         logger.info("Dashboard enabled at /admin (HR) and /me (staff)")
 

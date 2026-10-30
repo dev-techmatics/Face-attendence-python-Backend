@@ -1,25 +1,61 @@
 {% extends "base.html" %}
 {% block body %}
 <h1>People</h1>
-<p class="when">{{ rows | length }} on record &middot; unfinished registrations first</p>
+<p class="when">{{ active }} active &middot; {{ rows | length }} on record &middot; unfinished
+  registrations first</p>
+
+{% if flash %}
+<p class="flash {{ 'bad' if flash.kind == 'bad' else 'ok' }}">{{ flash.message }}</p>
+{% endif %}
+
+<div class="panel">
+  <h2>Add somebody</h2>
+  <form class="filters" method="post" action="/admin/people/add" enctype="multipart/form-data">
+    <div><label for="employee_id">Employee ID</label>
+      <input type="text" id="employee_id" name="employee_id" required placeholder="TS4014"></div>
+    <div><label for="full_name">Full name</label>
+      <input type="text" id="full_name" name="full_name" required placeholder="Priya Sharma"></div>
+    <div><label for="department">Department</label>
+      <input type="text" id="department" name="department" placeholder="optional"></div>
+    <div><label for="photo">Photo of their face</label>
+      <input type="file" id="photo" name="photo" accept="image/*" capture="user" required></div>
+    <button type="submit">Add</button>
+  </form>
+  <p class="note" style="margin:0; padding:0 16px 14px;">For somebody who cannot get to a
+    kiosk. One clear, front-on photo, judged by the same rules the kiosk uses.</p>
+</div>
 
 <div class="panel">
   <h2>Registration state</h2>
   {% if rows %}
   <table>
-    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>Photos</th><th>Department</th><th>Registered</th></tr></thead>
+    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>Photos</th><th>Department</th>
+      <th>Registered</th><th></th></tr></thead>
     <tbody>
     {% for r in rows %}
-      <tr>
+      <tr{% if r.archived %} class="dim"{% endif %}>
         <td>{{ r.name }}</td>
         <td>{{ r.external_id }}</td>
         <td>
-          {% if r.ready %}<span class="tag t-in">{{ r.state }}</span>
+          {% if r.archived %}<span class="tag t-off">Removed</span>
+          {% elif r.ready %}<span class="tag t-in">{{ r.state }}</span>
           {% else %}<span class="tag t-bad">{{ r.state }}</span>{% endif %}
         </td>
         <td>{{ r.photos }}</td>
         <td>{{ r.department or '' }}</td>
         <td>{{ r.enrolled_at | stamp }}</td>
+        <td class="row-actions">
+          {% if r.archived %}
+          <form method="post" action="/admin/people/{{ r.external_id }}/restore">
+            <button type="submit" class="link">Put back</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/people/{{ r.external_id }}/archive">
+            <button type="submit" class="link">Remove</button>
+          </form>
+          {% endif %}
+          <a class="link warn-link" href="/admin/people/{{ r.external_id }}/delete">Delete</a>
+        </td>
       </tr>
     {% endfor %}
     </tbody>
@@ -28,6 +64,11 @@
   <p class="empty">Nobody is registered yet.</p>
   {% endif %}
 </div>
+
+<p class="note"><strong>Remove</strong> stops somebody clocking in and takes them off the
+  Today board. Every hour they ever worked stays on record, and &ldquo;Put back&rdquo; undoes
+  it. <strong>Delete</strong> erases the person, their face and their whole attendance
+  history for good &mdash; that one cannot be undone.</p>
 
 <p class="note">&ldquo;Part registered&rdquo; means the photos were taken but something was
   wrong with them, so attendance will not work for that person yet.

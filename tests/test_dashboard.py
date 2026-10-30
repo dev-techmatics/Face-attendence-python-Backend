@@ -739,3 +739,260 @@ async def test_a_photo_from_another_tenant_is_not_reachable(client):
     assert (await client.get(f"/admin/photo/{event_id}")).status_code == 404
     assert (await client.get(f"/admin/photo/{event_id}/image")).status_code == 404
     assert (await client.post(f"/admin/photo/{event_id}/delete")).status_code == 404
+
+
+# ---- adding and removing people -----------------------------------------------------------
+
+
+async def signed_in_hr(client):
+    assert (await client.post("/admin/login", data={"password": PASSWORD})).status_code == 303
+
+
+async def test_hr_can_add_somebody_who_can_then_clock_in(client):
+    await signed_in_hr(client)
+
+    added = await client.post(
+        "/admin/people/add",
+        data={"employee_id": "ts4014", "full_name": "  Priya   Sharma ", "department": "Ops"},
+        files={"photo": upload("priya-front.jpg")},
+    )
+
+    assert added.status_code == 303
+
+    page = await client.get("/admin/people")
+    assert "Priya Sharma" in page.text          # whitespace tidied
+    assert "TS4014" in page.text                # id upper-cased
+    assert "Ops" in page.text
+    assert "can clock in now" in page.text
+
+    # The real proof: the kiosk recognises them.
+    await punch(client, "TS4014", "priya", "check_in", "2026-10-30T09:00:00Z")
+
+
+async def test_adding_rejects_a_duplicate_id_without_touching_the_original(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    clash = await client.post(
+        "/admin/people/add",
+        data={"employee_id": "TS4012", "full_name": "Someone Else"},
+        files={"photo": upload("bob-front.jpg")},
+    )
+
+    assert clash.status_code == 303
+    page = await client.get("/admin/people")
+    assert "already on the list" in page.text
+    assert "Someone Else" not in page.text
+    assert "Alice Example" in page.text
+
+
+async def test_adding_without_a_photo_says_so(client):
+    await signed_in_hr(client)
+
+    response = await client.post(
+        "/admin/people/add", data={"employee_id": "TS4014", "full_name": "Priya Sharma"}
+    )
+
+    assert response.status_code == 303
+    assert "photo of their face is needed" in (await client.get("/admin/people")).text
+
+
+async def test_a_bad_employee_id_is_refused(client):
+    await signed_in_hr(client)
+
+    response = await client.post(
+        "/admin/people/add",
+        data={"employee_id": "no spaces allowed", "full_name": "Priya Sharma"},
+        files={"photo": upload("priya-front.jpg")},
+    )
+
+    assert response.status_code == 303
+    assert "letters, numbers, dot, dash or underscore" in (await client.get("/admin/people")).text
+
+
+async def test_an_unusable_photo_leaves_no_half_made_record(client):
+    await signed_in_hr(client)
+
+    response = await client.post(
+        "/admin/people/add",
+        data={"employee_id": "TS4014", "full_name": "Priya Sharma"},
+        files={"photo": ("empty.jpg", b"", "image/jpeg")},
+    )
+
+    assert response.status_code == 303
+
+    # The id must not be left occupied by a record holding no usable face. Checked against
+    # the table row, because the add form carries TS4014 as its placeholder.
+    assert "/admin/people/TS4014/delete" not in (await client.get("/admin/people")).text
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        left_behind = (
+            await session.execute(select(Person).where(Person.external_id == "TS4014"))
+        ).scalars().all()
+
+    assert left_behind == []
+
+
+async def test_removing_somebody_stops_attendance_but_keeps_their_hours(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T08:58:00Z")
+
+    removed = await client.post("/admin/people/TS4012/archive")
+    assert removed.status_code == 303
+
+    people = await client.get("/admin/people")
+    assert "Removed" in people.text
+    assert "hours are still on record" in people.text
+
+    # Off the Today board.
+    assert "Alice Example" not in (await client.get("/admin")).text
+
+    # The history is untouched.
+    assert "Alice Example" in (await client.get("/admin/register")).text
+
+    # And the kiosk will not accept them any more.
+    refused = await client.post(
+        "/v1/attendance/punch",
+        headers=KIOSK,
+        data={
+            "employee_id": "TS4012",
+            "type": "check_out",
+            "captured_at": "2026-10-30T17:30:00Z",
+        },
+        files={"face": upload("alice-front.jpg")},
+    )
+    assert refused.json()["success"] is False
+
+
+async def test_removing_is_reversible(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    await client.post("/admin/people/TS4012/archive")
+    restored = await client.post("/admin/people/TS4012/restore")
+
+    assert restored.status_code == 303
+    assert "back on the list" in (await client.get("/admin/people")).text
+
+    # Back on the board and clocking in again.
+    assert "Alice Example" in (await client.get("/admin")).text
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T09:05:00Z")
+
+
+async def test_the_delete_screen_counts_what_would_be_destroyed(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T08:58:00Z")
+
+    page = await client.get("/admin/people/TS4012/delete")
+
+    assert page.status_code == 200
+    assert "cannot be undone" in page.text
+    assert "to confirm" in page.text
+    # It points at the reversible option rather than only warning.
+    assert "Remove</em> instead" in page.text
+
+
+async def test_deleting_does_nothing_until_the_id_is_typed_correctly(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    for wrong in ("", "TS4013", "ts401"):
+        response = await client.post("/admin/people/TS4012/delete", data={"confirm": wrong})
+
+        assert response.status_code == 400, wrong
+        assert "Nothing has been deleted" in response.text
+
+    assert "Alice Example" in (await client.get("/admin/people")).text
+
+
+async def test_deleting_erases_the_person_their_face_and_their_history(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await enrol(client, "TS4013", "Bob Example", "bob")
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T08:58:00Z")
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        alice_id = (
+            await session.execute(select(Person.id).where(Person.external_id == "TS4012"))
+        ).scalar_one()
+
+    # Lower case on purpose: normalising the typed id is the point, not its spelling.
+    gone = await client.post("/admin/people/TS4012/delete", data={"confirm": "ts4012"})
+    assert gone.status_code == 303
+
+    people = await client.get("/admin/people")
+    assert "deleted for good" in people.text
+    # Gone from the table. Her name is still on the page, in the sentence saying she was
+    # deleted, so the row is what has to be checked.
+    assert "/admin/people/TS4012/delete" not in people.text
+    # The person who was not deleted is untouched.
+    assert "/admin/people/TS4013/delete" in people.text
+    assert "Bob Example" in people.text
+
+    async with factory() as session:
+        assert (
+            await session.execute(select(Person).where(Person.external_id == "TS4012"))
+        ).scalars().all() == []
+
+        # No orphaned attendance rows pointing at a person who no longer exists.
+        assert (
+            await session.execute(
+                select(AttendanceEvent).where(AttendanceEvent.person_id == alice_id)
+            )
+        ).scalars().all() == []
+
+        assert (
+            await session.execute(select(Person).where(Person.external_id == "TS4013"))
+        ).scalars().first() is not None
+
+
+async def test_a_deleted_id_can_be_used_again(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/people/TS4012/delete", data={"confirm": "TS4012"})
+
+    await enrol(client, "TS4012", "Different Person", "bob")
+    assert "Different Person" in (await client.get("/admin/people")).text
+
+
+async def test_managing_people_needs_a_sign_in(client):
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    posts = (
+        ("/admin/people/add", {"employee_id": "TS9999", "full_name": "Nobody"}),
+        ("/admin/people/TS4012/archive", {}),
+        ("/admin/people/TS4012/restore", {}),
+        ("/admin/people/TS4012/delete", {"confirm": "TS4012"}),
+    )
+
+    for path, data in posts:
+        response = await client.post(path, data=data)
+        assert response.status_code == 303, path
+        assert response.headers["location"] == "/admin/login", path
+
+    stopped = await client.get("/admin/people/TS4012/delete")
+    assert stopped.headers["location"] == "/admin/login"
+
+    # Nothing happened to anybody.
+    await signed_in_hr(client)
+    page = await client.get("/admin/people")
+    assert "Alice Example" in page.text
+    assert "Removed" not in page.text
+    assert "TS9999" not in page.text
+
+
+async def test_acting_on_somebody_who_is_not_there_is_a_404(client):
+    await signed_in_hr(client)
+
+    assert (await client.post("/admin/people/NOBODY/archive")).status_code == 404
+    assert (await client.post("/admin/people/NOBODY/restore")).status_code == 404
+    assert (await client.get("/admin/people/NOBODY/delete")).status_code == 404
+    assert (
+        await client.post("/admin/people/NOBODY/delete", data={"confirm": "NOBODY"})
+    ).status_code == 404
