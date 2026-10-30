@@ -224,6 +224,19 @@ Note that `--proxy-headers` is **not** enabled on the server today, and must be 
 requests arrive straight from LAN clients, and trusting `X-Forwarded-For` from them would let
 any device on the office network claim any address and walk through the allowlist.
 
+## Checking the figures against the database
+
+```
+sqlcmd -S .\SQLEXPRESS -d FaceAttendance -E -i deploy\check-attendance.sql
+```
+
+Four results: every punch, the same punches paired into one line per person per day with
+hours, who is on the system, and whether any kiosk clock is drifting from this server's. Use
+it when somebody disputes what a screen says - it reads the same rows the dashboard reads,
+so if the two disagree the query is the one to trust and the dashboard is the bug.
+
+Edit the `@from` and `@to` at the top for a different period; it defaults to today.
+
 ## Seeing who is registered
 
 There is no web page for this yet. Three ways to look, easiest first.
