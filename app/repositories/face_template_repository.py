@@ -1,0 +1,135 @@
+"""Reads and writes for :class:`~app.domain.models.FaceTemplate`."""
+
+from __future__ import annotations
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.enums import FacePose, PersonStatus
+from app.core.faces import FaceCandidate
+from app.domain.models import FaceTemplate, Person
+
+
+class FaceTemplateRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_active_for_person(self, person_id: int) -> list[FaceTemplate]:
+        stmt = (
+            select(FaceTemplate)
+            .where(FaceTemplate.person_id == person_id, FaceTemplate.is_active.is_(True))
+            .order_by(FaceTemplate.pose)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def get_active_for_pose(self, person_id: int, pose: FacePose) -> FaceTemplate | None:
+        stmt = select(FaceTemplate).where(
+            FaceTemplate.person_id == person_id,
+            FaceTemplate.pose == pose,
+            FaceTemplate.is_active.is_(True),
+        )
+        return (await self._session.execute(stmt)).scalars().first()
+
+    async def get_all_for_person(self, person_id: int) -> list[FaceTemplate]:
+        stmt = select(FaceTemplate).where(FaceTemplate.person_id == person_id)
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    def add(self, template: FaceTemplate) -> None:
+        self._session.add(template)
+
+    async def remove(self, template: FaceTemplate) -> None:
+        await self._session.delete(template)
+
+    async def get_candidates(
+        self,
+        tenant_id: str,
+        provider_id: str,
+        exclude_person_id: int | None = None,
+    ) -> list[FaceCandidate]:
+        """The 1:N candidate set.
+
+        Projected straight to :class:`FaceCandidate` rather than to entities: the identity map
+        has no business holding thousands of embeddings.
+        """
+        stmt = (
+            select(
+                FaceTemplate.person_id,
+                FaceTemplate.id,
+                FaceTemplate.pose,
+                FaceTemplate.template_data,
+                FaceTemplate.image_object_key,
+            )
+            .join(Person, Person.id == FaceTemplate.person_id)
+            .where(
+                FaceTemplate.is_active.is_(True),
+                FaceTemplate.provider_id == provider_id,
+                Person.tenant_id == tenant_id,
+                Person.status == PersonStatus.Active,
+            )
+        )
+
+        if exclude_person_id is not None:
+            stmt = stmt.where(FaceTemplate.person_id != exclude_person_id)
+
+        rows = (await self._session.execute(stmt)).all()
+
+        return [
+            FaceCandidate(
+                person_id=row[0],
+                template_id=row[1],
+                pose=FacePose(row[2]),
+                template_data=row[3],
+                image_object_key=row[4],
+            )
+            for row in rows
+        ]
+
+    async def get_candidates_for_person(
+        self, person_id: int, provider_id: str
+    ) -> list[FaceCandidate]:
+        stmt = select(
+            FaceTemplate.person_id,
+            FaceTemplate.id,
+            FaceTemplate.pose,
+            FaceTemplate.template_data,
+            FaceTemplate.image_object_key,
+        ).where(
+            FaceTemplate.person_id == person_id,
+            FaceTemplate.is_active.is_(True),
+            FaceTemplate.provider_id == provider_id,
+        )
+
+        rows = (await self._session.execute(stmt)).all()
+
+        return [
+            FaceCandidate(
+                person_id=row[0],
+                template_id=row[1],
+                pose=FacePose(row[2]),
+                template_data=row[3],
+                image_object_key=row[4],
+            )
+            for row in rows
+        ]
+
+    async def get_max_version(self, person_id: int, pose: FacePose) -> int:
+        """Counts retired rows too, so versions never repeat for a person/pose pair."""
+        stmt = select(func.max(FaceTemplate.version)).where(
+            FaceTemplate.person_id == person_id, FaceTemplate.pose == pose
+        )
+        return int((await self._session.execute(stmt)).scalar() or 0)
+
+    async def image_hash_exists_for_person(
+        self, person_id: int, sha256: str, exclude_pose: FacePose
+    ) -> bool:
+        stmt = (
+            select(func.count())
+            .select_from(FaceTemplate)
+            .where(
+                FaceTemplate.person_id == person_id,
+                FaceTemplate.is_active.is_(True),
+                FaceTemplate.pose != exclude_pose,
+                FaceTemplate.image_sha256 == sha256,
+            )
+        )
+        return bool((await self._session.execute(stmt)).scalar_one())

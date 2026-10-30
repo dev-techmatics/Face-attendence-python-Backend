@@ -1,0 +1,2 @@
+# Optional cloud provider: only needed when FA_FACE__PROVIDER=aws or FA_STORAGE__PROVIDER=s3.
+boto3>=1.34

@@ -1,0 +1,6 @@
+# SQL Server drivers. Separate file because they need the Microsoft ODBC Driver 18
+# installed on the host, which a SQLite-backed dev box does not have.
+#   aioodbc -> runtime queries (mssql+aioodbc)
+#   pyodbc  -> Alembic migrations (mssql+pyodbc)
+aioodbc>=0.5.0
+pyodbc>=5.1

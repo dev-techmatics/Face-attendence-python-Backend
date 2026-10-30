@@ -1,0 +1,35 @@
+# ---- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Local configuration ---------------------------------------------------
+.env
+appsettings.Local.json
+
+# ---- Runtime data ----------------------------------------------------------
+# Face images and the database hold biometric personal data. Never commit them.
+storage/
+*.db
+*.db-journal
+*.sqlite3
+
+# ---- Models ----------------------------------------------------------------
+# ~5MB and ~250MB; download them with scripts/download_models.py instead.
+models/*.onnx
+
+# ---- Reference copy of the original C# service -----------------------------
+_src/
+_install.log
+
+# ---- Test fixtures ---------------------------------------------------------
+# Face photographs are personal data and not ours to redistribute. See the README
+# for what tests/fixtures/ needs; the ONNX tests skip when it is empty.
+tests/fixtures/*.jpg
+tests/fixtures/*.png
+models/MODELS.txt
