@@ -430,8 +430,14 @@ class EnrollmentService:
         ):
             return
 
+        # Everybody, including the archived and the suspended. "Is this face already on
+        # file" is not the same question as "who may clock in", and asking the narrower one
+        # here is what let a removed person register again under a new id.
         others = await self._templates.get_candidates(
-            person.tenant_id, self._provider.provider_id, exclude_person_id=person.id
+            person.tenant_id,
+            self._provider.provider_id,
+            exclude_person_id=person.id,
+            include_inactive=True,
         )
 
         if not others:
@@ -447,20 +453,33 @@ class EnrollmentService:
                 conflicting = candidate
 
         if conflicting is not None and best >= self._settings.duplicate_enrollment_threshold:
+            existing = await self._people.get_by_id(conflicting.person_id)
+            archived = existing is not None and existing.status != PersonStatus.Active
+
             logger.warning(
-                "Rejected enrollment for %s: scored %.3f against existing person %s",
+                "Rejected enrollment for %s: scored %.3f against existing person %s (%s)",
                 person.id,
                 best,
                 conflicting.person_id,
+                "archived" if archived else "active",
             )
 
+            # The screen that shows this is in front of whoever is registering, so it names
+            # no colleague. What it does say is which way out applies, because "already
+            # registered" sends an operator hunting for a record that is not in the list.
             raise FaceProcessingException(
                 FaceError.DuplicateIdentity,
-                f"This face already matches an existing registration (similarity {best:.2f}).",
+                (
+                    "This face belongs to a record that was removed. Ask your admin to put "
+                    "that record back instead of registering again."
+                    if archived
+                    else "This face is already registered under another ID."
+                ),
                 hints=[
                     "If this person is genuinely new, an operator should review the existing "
                     "record.",
-                    f"Conflicting person id: {conflicting.person_id}",
+                    f"Conflicting person id: {conflicting.person_id}"
+                    + (" (archived)" if archived else ""),
                 ],
             )
 

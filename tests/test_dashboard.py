@@ -1109,3 +1109,147 @@ async def test_the_day_view_needs_a_sign_in(client):
 
     assert response.status_code == 303
     assert response.headers["location"] == "/admin/login"
+
+
+# ---- one face, one identity ---------------------------------------------------------------
+
+
+async def test_a_removed_person_cannot_register_again_under_a_new_id(client):
+    """The bug this was written for.
+
+    "Is this face already on file" is not "who may clock in". Asking the narrower question
+    let somebody who had been removed come back as a second person, with their hours split
+    across two records and nothing on screen saying so.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/people/TS4012/archive")
+
+    again = await client.post(
+        "/v1/faces/enroll",
+        headers=KIOSK,
+        data={"employee_id": "TS9001", "full_name": "Alice Again"},
+        files={"face_front": upload("alice-front.jpg")},
+    )
+
+    body = again.json()
+    assert body["success"] is False, "a removed person's face must still be recognised"
+    assert "removed" in body["message"]
+    assert "put that record back" in body["message"]
+
+    # And no second record was left behind by the refusal.
+    page = await client.get("/admin/people")
+    assert "Alice Again" not in page.text
+    assert "/admin/people/TS9001/delete" not in page.text
+
+
+async def test_the_refusal_does_not_name_the_other_person(client):
+    # The kiosk screen is in front of whoever is registering, so it must not tell them
+    # whose face they matched.
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    clash = await client.post(
+        "/v1/faces/enroll",
+        headers=KIOSK,
+        data={"employee_id": "TS9001", "full_name": "Somebody Else"},
+        files={"face_front": upload("alice-front.jpg")},
+    )
+
+    message = clash.json()["message"]
+    assert clash.json()["success"] is False
+    assert "Alice" not in message
+    assert "TS4012" not in message
+
+
+async def test_a_live_duplicate_is_still_refused_with_its_own_wording(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    clash = await client.post(
+        "/v1/faces/enroll",
+        headers=KIOSK,
+        data={"employee_id": "TS9001", "full_name": "Somebody Else"},
+        files={"face_front": upload("alice-front.jpg")},
+    )
+
+    body = clash.json()
+    assert body["success"] is False
+    assert "already registered under another ID" in body["message"]
+    # The live case must not send an operator looking for a removed record.
+    assert "removed" not in body["message"]
+
+
+async def test_putting_the_record_back_is_what_actually_fixes_it(client):
+    """The instruction the refusal gives has to work."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/people/TS4012/archive")
+
+    restored = await client.post("/admin/people/TS4012/restore")
+    assert restored.status_code == 303
+
+    # Back to clocking in as themselves, no second identity needed.
+    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T09:00:00Z")
+
+
+async def test_a_removed_person_still_cannot_clock_in(client):
+    # The fix widens the duplicate check only. Who may mark attendance is a separate
+    # question and its answer must not change.
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/people/TS4012/archive")
+
+    refused = await client.post(
+        "/v1/attendance/punch",
+        headers=KIOSK,
+        data={
+            "employee_id": "TS4012",
+            "type": "check_in",
+            "captured_at": "2026-10-30T09:00:00Z",
+        },
+        files={"face": upload("alice-front.jpg")},
+    )
+
+    assert refused.json()["success"] is False
+
+
+async def test_a_removed_person_is_not_matched_by_a_face_search(client):
+    """1:N must still skip them, or a removed person clocks in without claiming an id."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/people/TS4012/archive")
+
+    found = await client.post(
+        "/v1/faces/identify", headers=KIOSK, files={"face": upload("alice-front.jpg")}
+    )
+
+    assert found.json()["success"] is False
+
+
+async def test_a_genuinely_new_face_is_unaffected(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/people/TS4012/archive")
+
+    # Somebody else entirely still gets in.
+    await enrol(client, "TS4013", "Bob Example", "bob")
+    assert "Bob Example" in (await client.get("/admin/people")).text
+
+
+async def test_the_dashboard_add_form_refuses_a_removed_persons_face_too(client):
+    # Same guard, or the hole simply moves to the other door.
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await client.post("/admin/people/TS4012/archive")
+
+    added = await client.post(
+        "/admin/people/add",
+        data={"employee_id": "TS9001", "full_name": "Alice Again"},
+        files={"photo": upload("alice-front.jpg")},
+    )
+
+    assert added.status_code == 303
+    page = await client.get("/admin/people")
+    assert "removed" in page.text
+    assert "Alice Again" not in page.text

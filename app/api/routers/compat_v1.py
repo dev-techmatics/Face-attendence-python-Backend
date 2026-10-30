@@ -381,7 +381,10 @@ def _enrol_message(exc: FaceProcessingException, pose: FacePose) -> JSONResponse
         case FaceError.MultipleFacesDetected:
             return no("More than one face in the photo. Only the person registering should be in frame.")
         case FaceError.DuplicateIdentity:
-            return no("This face is already registered under another ID.")
+            # Passed through rather than replaced: the service knows whether the conflicting
+            # record is a live one or one that was removed, and those need different
+            # instructions. Neither wording names the other person.
+            return no(exc.message)
         case FaceError.DuplicateFrame:
             return no("Those photos are the same picture. Please take a separate photo for each angle.")
         case FaceError.PoseMismatch:

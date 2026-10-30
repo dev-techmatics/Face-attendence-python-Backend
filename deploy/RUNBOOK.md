@@ -224,6 +224,17 @@ Note that `--proxy-headers` is **not** enabled on the server today, and must be 
 requests arrive straight from LAN clients, and trusting `X-Forwarded-For` from them would let
 any device on the office network claim any address and walk through the allowlist.
 
+## Finding people registered twice
+
+```
+.venv\Scripts\python deployind_duplicate_faces.py
+```
+
+Scores every stored face against every other and reports any pair held under two different
+employee IDs. The service already refuses a duplicate at registration — archived records
+included — so anything this finds either predates that check or is two genuinely similar
+faces. Look at both photographs before deleting anything.
+
 ## Checking the figures against the database
 
 ```

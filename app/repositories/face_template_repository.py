@@ -50,11 +50,18 @@ class FaceTemplateRepository:
         tenant_id: str,
         provider_id: str,
         exclude_person_id: int | None = None,
+        include_inactive: bool = False,
     ) -> list[FaceCandidate]:
         """The 1:N candidate set.
 
         Projected straight to :class:`FaceCandidate` rather than to entities: the identity map
         has no business holding thousands of embeddings.
+
+        ``include_inactive`` is the difference between two questions that look alike. Matching
+        somebody at a kiosk asks "who here may clock in", so it leaves out the archived and the
+        suspended. Checking a new registration asks "is this face already on file", and that
+        one must see everybody - otherwise archiving a person quietly licenses them to come
+        back under a second identity, with their hours split across the two.
         """
         stmt = (
             select(
@@ -69,9 +76,11 @@ class FaceTemplateRepository:
                 FaceTemplate.is_active == True,
                 FaceTemplate.provider_id == provider_id,
                 Person.tenant_id == tenant_id,
-                Person.status == PersonStatus.Active,
             )
         )
+
+        if not include_inactive:
+            stmt = stmt.where(Person.status == PersonStatus.Active)
 
         if exclude_person_id is not None:
             stmt = stmt.where(FaceTemplate.person_id != exclude_person_id)
