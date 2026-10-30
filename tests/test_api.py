@@ -407,3 +407,19 @@ async def test_attendance_is_rate_limited_per_device(client):
     assert response.status_code == 429
     assert response.json()["code"] == "rate_limited"
     assert "Retry-After" in response.headers
+
+
+async def test_a_404_on_the_native_api_is_a_problem_document(client):
+    # Starlette's default for an unknown route is {"detail": ...}; the native API answers in
+    # RFC 9457 like every other error, so a client can branch on `code` throughout.
+    response = await client.get("/api/v1/nope", headers=ADMIN)
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
+async def test_a_405_on_the_native_api_is_a_problem_document(client):
+    response = await client.get("/api/v1/registrations", headers=ADMIN)
+
+    assert response.status_code == 405
+    assert response.json()["code"] == "method_not_allowed"

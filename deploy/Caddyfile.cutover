@@ -1,0 +1,53 @@
+# PREPARED, NOT APPLIED.
+#
+# Replaces D:\face-attendance\Caddyfile when you switch the kiosks from the CompreFace
+# backend to this one. I have not applied it, for one reason: the moment it goes live the
+# existing enrolments stop working, because CompreFace templates and ArcFace embeddings are
+# not interchangeable. Everyone has to be re-registered first. Flipping this without planning
+# that would take the kiosks down mid-shift.
+#
+# What changes: the one reverse_proxy line. Caddy keeps terminating TLS with the certificate
+# the phones already trust, so no phone needs touching and the app's base URL does not change.
+#
+# To apply:
+#   copy  E:\Fa-py\deploy\Caddyfile.cutover  D:\face-attendance\Caddyfile
+#   cd /d D:\face-attendance && docker compose up -d --force-recreate caddy
+# To roll back, restore the original file and run the same command.
+
+{
+	default_sni {$SERVER_IP}
+	skip_install_trust
+}
+
+https://{$SERVER_IP} {
+	tls internal
+
+	@office remote_ip {$OFFICE_NETWORKS}
+	handle @office {
+		request_body {
+			max_size 20MB
+		}
+
+		# Was: reverse_proxy api:8080  (the CompreFace-backed API container)
+		# Now: the Python backend on the Windows host. TLS on this hop too, so nothing is in
+		# plaintext even between the container and the host; the certificate is self-signed
+		# and only has to be accepted by Caddy, not by a phone.
+		reverse_proxy https://host.docker.internal:8443 {
+			transport http {
+				tls
+				tls_insecure_skip_verify
+			}
+
+			# Without these the backend sees the Docker gateway as the client and its own
+			# network allowlist refuses every phone.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	handle {
+		abort
+	}
+
+	log
+}

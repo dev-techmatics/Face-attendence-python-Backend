@@ -11,12 +11,31 @@ import re
 import uuid
 
 from fastapi import FastAPI, Request, status
-from fastapi.exceptions import HTTPException, RequestValidationError
+from fastapi.exceptions import RequestValidationError
+# Starlette's class, not FastAPI's subclass of it: the routing layer raises the parent for a
+# 404 or a 405, and a handler registered against the subclass would not see those at all -
+# they would fall through to Starlette's own {"detail": ...} default.
+from starlette.exceptions import HTTPException
 from fastapi.responses import JSONResponse
 
 from app.core.errors import DomainErrorKind, DomainException, FaceError, FaceProcessingException
 
 logger = logging.getLogger(__name__)
+
+#: Everything under this prefix answers the iOS kiosk app, which parses a flat
+#: ``{"success": bool, "message": str}`` body. Handing it this project's RFC 9457 problem
+#: document instead would leave it with no ``message`` to show, and it would fall back to
+#: "couldn't reach the server" - wrong and unhelpful. So every handler below checks the path
+#: and answers in the app's shape.
+KIOSK_PREFIX = "/v1/"
+
+
+def _is_kiosk(request: Request) -> bool:
+    return request.url.path.startswith(KIOSK_PREFIX)
+
+
+def _kiosk(message: str, http_status: int) -> JSONResponse:
+    return JSONResponse({"success": False, "message": message}, status_code=http_status)
 
 #: 499 is the nginx convention for a client that went away; HTTP has no such code.
 CLIENT_CLOSED_REQUEST = 499
@@ -81,6 +100,9 @@ def register_exception_handlers(app: FastAPI) -> None:
 
         _log(request, http_status, to_snake_case(exc.error.value), exc)
 
+        if _is_kiosk(request):
+            return _kiosk(exc.message, http_status)
+
         # Curated messages are shown whatever the status code. A 503 saying "detector model
         # not found at <path>" is exactly what the operator needs; replacing it with "an
         # unexpected error occurred" turns a two-minute fix into an afternoon of log
@@ -104,6 +126,9 @@ def register_exception_handlers(app: FastAPI) -> None:
 
         _log(request, http_status, exc.code, exc)
 
+        if _is_kiosk(request):
+            return _kiosk(exc.message, http_status)
+
         return _problem(
             request,
             http_status,
@@ -121,6 +146,12 @@ def register_exception_handlers(app: FastAPI) -> None:
 
         _log(request, status.HTTP_400_BAD_REQUEST, "malformed_request", exc)
 
+        if _is_kiosk(request):
+            # The wording the app showed before, so nothing on screen changes.
+            return _kiosk(
+                "Some details were missing. Please try again.", status.HTTP_400_BAD_REQUEST
+            )
+
         return _problem(
             request,
             status.HTTP_400_BAD_REQUEST,
@@ -136,10 +167,14 @@ def register_exception_handlers(app: FastAPI) -> None:
             status.HTTP_401_UNAUTHORIZED: "unauthorized",
             status.HTTP_403_FORBIDDEN: "forbidden",
             status.HTTP_404_NOT_FOUND: "not_found",
+            status.HTTP_405_METHOD_NOT_ALLOWED: "method_not_allowed",
             status.HTTP_429_TOO_MANY_REQUESTS: "rate_limited",
         }.get(exc.status_code, f"http_{exc.status_code}")
 
         _log(request, exc.status_code, code, exc)
+
+        if _is_kiosk(request):
+            return _kiosk(str(exc.detail), exc.status_code)
 
         response = _problem(
             request,
@@ -163,6 +198,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         logger.exception(
             "Unhandled exception on %s %s", request.method, request.url.path
         )
+
+        if _is_kiosk(request):
+            return _kiosk(
+                "Face service is not responding. Please try again.",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         # Anything unrecognised gets a generic message: stack traces and connection strings
         # have a habit of ending up in exception text.

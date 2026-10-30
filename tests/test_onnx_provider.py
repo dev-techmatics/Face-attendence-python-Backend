@@ -193,7 +193,7 @@ async def test_the_same_person_scores_far_above_the_threshold(provider):
 
 async def test_a_different_person_scores_far_below_the_threshold(provider):
     one = await provider.create_template(face_image("portrait.jpg"), FacePose.Front)
-    other = await provider.create_template(face_image("group.jpg"), FacePose.Front)
+    other = await provider.create_template(face_image("portrait2.jpg"), FacePose.Front)
 
     score = provider.compare_templates(one.data, other.data)
 
@@ -202,7 +202,7 @@ async def test_a_different_person_scores_far_below_the_threshold(provider):
 
 async def test_match_picks_the_right_person_out_of_a_candidate_set(provider):
     mine = await provider.create_template(face_image("portrait.jpg"), FacePose.Front)
-    theirs = await provider.create_template(face_image("group.jpg"), FacePose.Front)
+    theirs = await provider.create_template(face_image("portrait2.jpg"), FacePose.Front)
 
     candidates = [
         FaceCandidate(
@@ -224,7 +224,7 @@ async def test_match_picks_the_right_person_out_of_a_candidate_set(provider):
 
 
 async def test_match_against_only_the_wrong_person_does_not_match(provider):
-    theirs = await provider.create_template(face_image("group.jpg"), FacePose.Front)
+    theirs = await provider.create_template(face_image("portrait2.jpg"), FacePose.Front)
 
     candidates = [
         FaceCandidate(

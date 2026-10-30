@@ -17,7 +17,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import text
 
 from app.api.errors import register_exception_handlers
-from app.api.routers import attendance, diagnostics, persons, registration
+from app.api.routers import attendance, compat_v1, diagnostics, persons, registration
 from app.api.trusted_network import TrustedNetworkMiddleware
 from app.core.clock import SystemClock
 from app.core.config import Settings, get_settings
@@ -206,6 +206,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(registration.router)
     app.include_router(attendance.router)
     app.include_router(diagnostics.router)
+
+    # The contract the existing iOS kiosk app speaks. Translation only: every request lands
+    # on the same services as the native API.
+    app.include_router(compat_v1.router)
 
     @app.get("/health", tags=["health"], summary="Liveness and database check")
     async def health() -> dict[str, str]:

@@ -156,3 +156,40 @@ GDPR. Everything stays on this machine: the ONNX provider sends nothing to any t
 which is the main reason it is the configured engine rather than AWS Rekognition. The volume
 holding `E:\Fa-py\data` is not encrypted — worth fixing with BitLocker if the machine could
 ever leave the office.
+
+## The kiosk app's own API (`/v1`)
+
+The iOS app was built against the earlier CompreFace service and speaks a different dialect:
+`Bearer` tokens, four addresses under `/v1`, and a flat `{"success": …, "message": …}` reply
+with HTTP 200 even for a refusal. `app/api/routers/compat_v1.py` translates, so the app does
+not have to be rewritten:
+
+| App calls | Translated to |
+| --- | --- |
+| `GET /v1/health` | a headcount of enrolled people |
+| `POST /v1/faces/enroll` | create person + capture each pose |
+| `POST /v1/faces/identify` | a 1:N match that records nothing |
+| `POST /v1/attendance/punch` | mark attendance, 1:1 against the claimed id |
+
+Two settings exist for the app's sake, both in `.env.production`:
+
+- `FA_FACE__REQUIRED_POSES=["Front"]` — the app offers the two side photos but does not
+  guarantee them. Sides are still stored and still used for matching when they arrive. Raise
+  this to all three once the app insists on three captures; three angles is the more accurate
+  enrolment, it just cannot be a precondition today.
+- `FA_FACE__INFER_DIRECTION=false` — the app's screen has already told the user whether this
+  is a check-in or a check-out, so its value is honoured instead of being inferred.
+
+### Switching the kiosks over
+
+Not done, deliberately. `deploy\Caddyfile.cutover` is the prepared change — one
+`reverse_proxy` line. Caddy keeps serving 443 with the certificate the phones already trust,
+so **no phone needs touching and the app's base URL does not change**.
+
+The blocker is not technical: **everyone must be re-registered first**, because CompreFace
+templates and ArcFace embeddings cannot be converted. Plan that, then apply the cutover.
+
+Note that `--proxy-headers` is **not** enabled on the server today, and must be switched on in
+`start-server.cmd` at the same time as the cutover — not before. Until Caddy is in front,
+requests arrive straight from LAN clients, and trusting `X-Forwarded-For` from them would let
+any device on the office network claim any address and walk through the allowlist.

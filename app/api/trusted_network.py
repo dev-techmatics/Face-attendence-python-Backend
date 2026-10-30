@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 #: Paths answered regardless of origin. A monitoring probe on the loopback interface must not
 #: need to be in the allowlist, and /health leaks nothing an attacker could use.
-ALWAYS_ALLOWED = ("/health",)
+ALWAYS_ALLOWED = ("/health", "/v1/health")
 
 
 class TrustedNetworkMiddleware(BaseHTTPMiddleware):
