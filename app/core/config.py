@@ -284,6 +284,19 @@ class Settings(BaseSettings):
     #: the production environment file sets this explicitly.
     trusted_networks: list[str] = Field(default_factory=list)
 
+    #: Password for the attendance dashboard at /admin. Empty disables the dashboard
+    #: entirely, which is the right default: a page listing everyone's movements should not
+    #: appear just because someone deployed with stock settings.
+    admin_ui_password: str = ""
+
+    #: Signs the dashboard's session cookie. Generated per deployment; changing it logs
+    #: everyone out, which is also how you revoke a session.
+    session_secret: str = ""
+
+    #: How long a dashboard login lasts. A reception screen is left open all day, so this is
+    #: a shift rather than an hour.
+    session_hours: int = 8
+
     #: Per-device fixed window on the attendance endpoint.
     attendance_rate_limit_per_minute: int = 60
 
@@ -324,6 +337,23 @@ class Settings(BaseSettings):
             file_secret_settings,
             AppSettingsSource(settings_cls),
         )
+
+    @model_validator(mode="after")
+    def _dashboard_needs_a_cookie_secret(self) -> "Settings":
+        # A guessable signing key means anybody can mint a session cookie, which would make
+        # the password pointless. Better to refuse to start than to serve that.
+        if (self.admin_ui_password or self.session_secret) and len(self.session_secret) < 32:
+            raise ValueError(
+                "session_secret must be at least 32 characters when the dashboard is "
+                "enabled. Generate one with: python -c \"import secrets; "
+                'print(secrets.token_urlsafe(48))"'
+            )
+
+        return self
+
+    @property
+    def dashboard_enabled(self) -> bool:
+        return bool(self.admin_ui_password and self.session_secret)
 
     @property
     def is_development(self) -> bool:

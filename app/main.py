@@ -14,9 +14,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import text
 
 from app.api.errors import register_exception_handlers
+from app.admin import router as admin_router
+from app.admin import staff as staff_router
 from app.api.routers import attendance, compat_v1, diagnostics, persons, registration
 from app.api.trusted_network import TrustedNetworkMiddleware
 from app.core.clock import SystemClock
@@ -210,6 +213,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # The contract the existing iOS kiosk app speaks. Translation only: every request lands
     # on the same services as the native API.
     app.include_router(compat_v1.router)
+
+    # The pages people look at. Only mounted when a password is configured: a page listing
+    # everyone's movements must not appear just because someone deployed with stock settings.
+    if settings.dashboard_enabled:
+        app.add_middleware(
+            SessionMiddleware,
+            secret_key=settings.session_secret,
+            session_cookie="fa_session",
+            max_age=settings.session_hours * 3600,
+            same_site="lax",
+            # The service is HTTPS-only in every deployment, and a session cookie for a page
+            # showing attendance has no business travelling in clear.
+            https_only=not settings.is_development,
+        )
+        app.include_router(admin_router.router)
+        app.include_router(staff_router.router)
+        logger.info("Dashboard enabled at /admin (HR) and /me (staff)")
 
     @app.get("/health", tags=["health"], summary="Liveness and database check")
     async def health() -> dict[str, str]:

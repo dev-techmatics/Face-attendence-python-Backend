@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Monthly summary</h1>
+<p class="when">{{ window.label }}</p>
+
+<div class="panel">
+  <form class="filters" method="get" action="/admin/monthly">
+    <div><label for="month">Month</label><input type="month" id="month" name="month" value="{{ month }}"></div>
+    <button type="submit">Show</button>
+    <a class="btn ghost" href="/admin/monthly.csv?month={{ month }}">Download for Excel</a>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Per person</h2>
+  {% if rows %}
+  <table>
+    <thead><tr><th>Name</th><th>ID</th><th>Days present</th><th>Hours</th><th>First in</th><th>Last out</th><th>Unpaired</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ r.external_id }}</td>
+        <td>{{ r.days }}</td>
+        <td>{{ '%.1f' % r.hours }}</td>
+        <td>{{ r.first | stamp }}</td>
+        <td>{{ r.last | stamp }}</td>
+        <td>{% if r.unpaired %}<span class="tag t-bad">{{ r.unpaired }}</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No attendance recorded in this month.</p>
+  {% endif %}
+</div>
+
+<p class="note">Hours are added up from matching in/out pairs, so a lunch break that was
+  punched out and back in is not counted as time at work.
+  &ldquo;Unpaired&rdquo; counts punches with no matching other half &mdash; usually somebody
+  forgetting to punch out. Check those before using these totals for pay.</p>
+{% endblock %}

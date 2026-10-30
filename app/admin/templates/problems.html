@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Problems</h1>
+<p class="when">{{ window.label }}</p>
+
+<div class="panel">
+  <form class="filters" method="get" action="/admin/problems">
+    <div><label for="from">From</label><input type="date" id="from" name="from" value="{{ date_from }}"></div>
+    <div><label for="to">To</label><input type="date" id="to" name="to" value="{{ date_to }}"></div>
+    <button type="submit">Show</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Failures, grouped</h2>
+  {% if groups %}
+  <table>
+    <thead><tr><th>Reason</th><th>Device</th><th>Times</th><th>First</th><th>Last</th><th>What it usually means</th></tr></thead>
+    <tbody>
+    {% for g in groups %}
+      <tr>
+        <td><span class="tag t-bad">{{ g.result }}</span></td>
+        <td>{{ g.device or 'not reported' }}</td>
+        <td>{{ g.total }}</td>
+        <td>{{ g.first_at | clock }}</td>
+        <td>{{ g.last_at | clock }}</td>
+        <td class="cause">{{ g.cause }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No failures in this period. Nothing to fix.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Attempts by hour</h2>
+  {% if hours %}
+  <div class="hours">
+    {% for h in hours %}
+    <div class="row">
+      <span class="h">{{ '%02d:00' % h.hour }}</span>
+      <span class="barwrap">
+        {% if h.accepted %}<span class="ok" style="width: {{ (100 * h.accepted / peak) | round(1) }}%"></span>{% endif %}
+        {% if h.failed %}<span class="no" style="width: {{ (100 * h.failed / peak) | round(1) }}%"></span>{% endif %}
+      </span>
+      <span class="c">{{ h.accepted }} ok, {{ h.failed }} bad</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No attempts in this period.</p>
+  {% endif %}
+</div>
+
+<p class="note">A run of the same failure at one time of day, on one device, is usually the
+  room rather than the people &mdash; a light behind the subject, or a camera aimed too high.
+  That is easier to see here than in a list of individual rows.</p>
+{% endblock %}

@@ -223,3 +223,52 @@ id>\`. The attendance photos are under `probes\` and delete themselves after 30 
 
 Note that failed attempts are kept deliberately. They are the evidence when somebody says the
 machine did not recognise them.
+
+## The dashboard
+
+Two audiences, two doors, one page each:
+
+| Who | Where | Signs in with |
+| --- | --- | --- |
+| A member of staff | `https://172.24.61.79:8443/me` | a photo of themselves |
+| HR / admin | `https://172.24.61.79:8443/admin` | the dashboard password |
+
+**Staff sign in with their face, not a password.** For forty or fifty people, passwords mean
+forty or fifty handovers and a reset request every time somebody forgets. The recognition
+engine is already trusted to decide who is standing at the kiosk, so it decides who is looking
+at the page. The photo is taken with an ordinary camera input, so it needs no JavaScript and no
+camera API. Looking at your hours records nothing — it is not a punch.
+
+What that costs: a photograph of a colleague would let someone read that colleague's hours.
+The page is read-only, shows one person's own record, and only works on the office network, so
+the worst case is one colleague seeing another's working hours. If that is not acceptable, a
+PIN alongside the photo is a small change — ask.
+
+Staff see: in or out now, hours this week and this month, late arrivals, days not present, and
+the last fortnight day by day. Hours come from matching in/out pairs, so a break punched out
+for is not counted, and a punch with no matching half is flagged rather than guessed at.
+
+HR sees: Today (who is in, refreshing itself), Register (every attempt, with an Excel
+download), People (who has not finished registering), Problems (failures grouped with a likely
+cause, and attempts by hour), Monthly (hours per person, with an Excel download).
+
+Both are off unless `FA_ADMIN_UI_PASSWORD` is set, and the service refuses to start if
+`FA_SESSION_SECRET` is too short to be safe. The password is in `deploy\API-KEYS.txt`.
+
+### The certificate warning
+
+A browser opening `https://172.24.61.79:8443` shows a warning, because the certificate is
+self-signed. The kiosk iPhones do not see this — they trust Caddy's root, which was installed
+when they were set up — but a laptop or an unprepared phone will.
+
+Two ways out, in order of preference:
+
+1. **Put the dashboard behind Caddy** at the same time as the kiosk cutover
+   (`deploy\Caddyfile.cutover`). Caddy already serves a certificate the kiosk phones trust.
+2. **Install Caddy's root certificate** on whichever devices will open the dashboard. It is
+   `D:\face-attendance\face-attendance-root.crt`, and the steps are in
+   `D:\face-attendance\SETUP-WINDOWS-SERVER.md` (install the profile, then turn on the
+   full-trust switch — both parts are needed).
+
+Clicking through the warning works but teaches people to ignore certificate warnings, which is
+a habit worth not creating.

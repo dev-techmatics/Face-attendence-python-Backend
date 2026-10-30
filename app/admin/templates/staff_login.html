@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="panel" style="padding:24px">
+  <h1 style="margin-bottom:6px">My attendance</h1>
+  <p class="note" style="margin:0 0 18px">Take a photo of yourself to see your own hours.</p>
+
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <form method="post" action="/me/signin" enctype="multipart/form-data">
+    <!-- capture="user" opens the front camera on a phone and falls back to a file picker on
+         a desktop. No camera API, so this keeps working on a self-signed certificate. -->
+    <label for="photo" class="shot">
+      <span class="shot-icon">&#128247;</span>
+      <span class="shot-text">Tap to take your photo</span>
+    </label>
+    <input type="file" id="photo" name="photo" accept="image/*" capture="user"
+           onchange="this.form.submit()" style="display:none">
+    <noscript><button type="submit" style="margin-top:12px">Sign in</button></noscript>
+  </form>
+
+  <p class="note" style="margin-top:18px">You will only ever see your own attendance.
+    If it does not recognise you, ask HR to check you are registered.</p>
+</div>
+<style>
+  .shot { display:flex; flex-direction:column; align-items:center; justify-content:center;
+          gap:10px; padding:38px 16px; border:2px dashed var(--line); border-radius:12px;
+          cursor:pointer; color:var(--muted); }
+  .shot:hover { border-color: var(--accent); color: var(--accent); }
+  .shot-icon { font-size:40px; line-height:1; }
+  .shot-text { font-weight:600; }
+</style>
+{% endblock %}

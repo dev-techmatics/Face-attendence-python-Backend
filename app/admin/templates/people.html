@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>People</h1>
+<p class="when">{{ rows | length }} on record &middot; unfinished registrations first</p>
+
+<div class="panel">
+  <h2>Registration state</h2>
+  {% if rows %}
+  <table>
+    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>Photos</th><th>Department</th><th>Registered</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td>{{ r.external_id }}</td>
+        <td>
+          {% if r.ready %}<span class="tag t-in">{{ r.state }}</span>
+          {% else %}<span class="tag t-bad">{{ r.state }}</span>{% endif %}
+        </td>
+        <td>{{ r.photos }}</td>
+        <td>{{ r.department or '' }}</td>
+        <td>{{ r.enrolled_at | stamp }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Nobody is registered yet.</p>
+  {% endif %}
+</div>
+
+<p class="note">&ldquo;Part registered&rdquo; means the photos were taken but something was
+  wrong with them, so attendance will not work for that person yet.
+  &ldquo;Needs registering again&rdquo; means the recognition model changed since their photos
+  were taken, so the old ones can no longer be compared.</p>
+{% endblock %}

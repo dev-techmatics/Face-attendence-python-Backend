@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="mehead">
+  <div>
+    <h1 style="margin-bottom:2px">{{ me.full_name }}</h1>
+    <p class="when" style="margin:0">{{ me.external_id }}{% if me.department %} &middot; {{ me.department }}{% endif %}</p>
+  </div>
+  <a class="btn ghost" href="/me/signout">Sign out</a>
+</div>
+
+<div class="panel" style="padding:18px 16px; margin-top:16px">
+  {% if me.state == 'In' %}
+    <span class="tag t-in" style="font-size:14px">You are in</span>
+    <span class="since">since {{ me.since | clock }}</span>
+  {% elif me.state == 'Out' %}
+    <span class="tag t-out" style="font-size:14px">You have left</span>
+    <span class="since">at {{ me.since | clock }}</span>
+  {% else %}
+    <span class="tag t-off" style="font-size:14px">Not seen today</span>
+  {% endif %}
+</div>
+
+<div class="cards">
+  <div class="card">
+    <div class="n">{{ me.week_hours | hours }}</div>
+    <div class="l">This week</div>
+    <div class="sub">{{ me.week_days }} day{{ '' if me.week_days == 1 else 's' }}</div>
+  </div>
+  <div class="card">
+    <div class="n">{{ me.month_hours | hours }}</div>
+    <div class="l">This month</div>
+    <div class="sub">{{ me.month_days }} day{{ '' if me.month_days == 1 else 's' }}</div>
+  </div>
+  <div class="card">
+    <div class="n">{{ me.late_days }}</div>
+    <div class="l">Late arrivals</div>
+    <div class="sub">after 09:30, this month</div>
+  </div>
+  <div class="card">
+    <div class="n">{{ me.absent_days }}</div>
+    <div class="l">Not present</div>
+    <div class="sub">weekdays, this month</div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Last two weeks</h2>
+  {% if me.days %}
+  <table>
+    <thead><tr><th>Day</th><th>In</th><th>Out</th><th>Hours</th></tr></thead>
+    <tbody>
+    {% for d in me.days %}
+      <tr>
+        <td>{{ d.day | day }}{% if d.day == today %} <span class="tag t-in">today</span>{% endif %}</td>
+        <td>{{ d.first_in | clock }}</td>
+        <td>
+          {% if d.open_now %}<span class="muted">still in</span>
+          {% else %}{{ d.last_out | clock }}{% endif %}
+        </td>
+        <td>
+          {{ d.hours | hours }}
+          {% if d.unpaired %}<span class="tag t-bad" title="A punch with no matching other half">check</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No attendance recorded in the last two weeks.</p>
+  {% endif %}
+</div>
+
+<p class="note">Hours are added up from matching in and out punches, so a break you punched
+  out for is not counted. A day marked <span class="tag t-bad">check</span> has a punch with
+  no matching other half &mdash; usually a forgotten punch-out. Tell HR and they can correct
+  it.</p>
+
+<style>
+  .mehead { display:flex; align-items:flex-start; gap:12px; }
+  .mehead a { margin-left:auto; flex:none; }
+  .since { color: var(--muted); font-size: 14px; margin-left: 6px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .muted { color: var(--muted); }
+</style>
+{% endblock %}

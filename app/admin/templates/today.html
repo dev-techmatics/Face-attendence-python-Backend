@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Today</h1>
+<p class="when">{{ window.label }} &middot; updates on its own every 30 seconds</p>
+
+<div class="cards">
+  <div class="card"><div class="n">{{ counts.in_now }}</div><div class="l">In now</div></div>
+  <div class="card"><div class="n">{{ counts.left }}</div><div class="l">Left</div></div>
+  <div class="card"><div class="n">{{ counts.not_seen }}</div><div class="l">Not seen today</div></div>
+  <div class="card"><div class="n">{{ counts.failed }}</div><div class="l">Failed attempts</div></div>
+</div>
+
+{% if counts.unfinished %}
+<p class="note">{{ counts.unfinished }} {{ 'person' if counts.unfinished == 1 else 'people' }}
+  {{ 'has' if counts.unfinished == 1 else 'have' }} not finished registering &mdash;
+  <a href="/admin/people">see People</a>.</p>
+{% endif %}
+
+<div class="panel">
+  <h2>Who is in</h2>
+  {% if board %}
+  <table>
+    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>First in</th><th>Last seen</th><th>Punches</th></tr></thead>
+    <tbody>
+    {% for p in board %}
+      <tr>
+        <td>{{ p.full_name }}</td>
+        <td>{{ p.external_id }}</td>
+        <td>
+          {% if p.state == 'In' %}<span class="tag t-in">In</span>
+          {% elif p.state == 'Out' %}<span class="tag t-out">Left</span>
+          {% else %}<span class="tag t-off">Not seen</span>{% endif %}
+        </td>
+        <td>{{ p.first_in | clock }}</td>
+        <td>{{ p.last_seen | clock }}</td>
+        <td>{{ p.punches or '' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Nobody is registered yet, so there is nothing to show.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Attendance register</h1>
+<p class="when">{{ window.label }} &middot; {{ rows | length }} attempt{{ '' if rows | length == 1 else 's' }}</p>
+
+<div class="panel">
+  <form class="filters" method="get" action="/admin/register">
+    <div><label for="from">From</label><input type="date" id="from" name="from" value="{{ date_from }}"></div>
+    <div><label for="to">To</label><input type="date" id="to" name="to" value="{{ date_to }}"></div>
+    <div><label for="q">Name or ID</label><input type="search" id="q" name="q" value="{{ search or '' }}" placeholder="anyone"></div>
+    <div><label for="failures">Show</label>
+      <select id="failures" name="failures" style="padding:7px 9px;border:1px solid var(--line);border-radius:7px;font:inherit;background:#fff">
+        <option value="">Everything</option>
+        <option value="1" {{ 'selected' if only_failures }}>Failures only</option>
+      </select>
+    </div>
+    <button type="submit">Show</button>
+    <a class="btn ghost" href="/admin/register.csv?{{ query_string }}">Download for Excel</a>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Every attempt, newest first</h2>
+  {% if rows %}
+  <table>
+    <thead><tr><th>When</th><th>Name</th><th>ID</th><th>In/Out</th><th>Result</th><th>Device</th><th>Photo</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>{{ r.when | stamp }}</td>
+        <td>{{ r.name or 'not recognised' }}</td>
+        <td>{{ r.external_id or '' }}</td>
+        <td>{{ r.direction }}</td>
+        <td>
+          {% if r.accepted %}<span class="tag t-in">{{ r.result }}</span>
+          {% else %}<span class="tag t-bad">{{ r.result }}</span>{% endif %}
+        </td>
+        <td>{{ r.device or '' }}</td>
+        <td>{% if r.has_photo %}<a href="/admin/photo/{{ r.id }}" target="_blank" rel="noreferrer">show</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Nothing recorded in this period.</p>
+  {% endif %}
+</div>
+
+<p class="note">Failed attempts are kept on purpose: they are the evidence when somebody says
+  the machine did not recognise them. Photos are only loaded when you click
+  &ldquo;show&rdquo;, and are deleted automatically after
+  {{ retention_days }} days.</p>
+{% endblock %}

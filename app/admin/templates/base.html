@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% if refresh %}<meta http-equiv="refresh" content="{{ refresh }}">{% endif %}
+<title>{{ title }} &middot; Attendance</title>
+<style>
+  /* One stylesheet, no framework, no CDN: this page has to load on the office LAN with no
+     internet, and on a phone held at reception. */
+  :root {
+    --ink: #1a1d21; --muted: #6b7280; --line: #e5e7eb; --bg: #f7f8fa; --card: #fff;
+    --in: #0f7b3f; --in-bg: #e7f5ec; --out: #8a5a00; --out-bg: #fdf3e2;
+    --bad: #a81e1e; --bad-bg: #fbeaea; --accent: #1e4fa8;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { background: var(--card); border-bottom: 1px solid var(--line); padding: 0 16px; }
+  .bar { display: flex; align-items: center; gap: 16px; max-width: 1100px; margin: 0 auto;
+         min-height: 56px; flex-wrap: wrap; }
+  .brand { font-weight: 650; margin-right: auto; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav a { padding: 7px 11px; border-radius: 7px; text-decoration: none; color: var(--muted); }
+  nav a:hover { background: var(--bg); color: var(--ink); }
+  nav a.on { background: var(--accent); color: #fff; }
+  .out a { color: var(--muted); font-size: 13px; text-decoration: none; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .when { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+           gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; }
+  .card .n { font-size: 26px; font-weight: 650; }
+  .card .l { color: var(--muted); font-size: 12px; text-transform: uppercase;
+             letter-spacing: .04em; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+           overflow: hidden; margin-bottom: 24px; }
+  .panel h2 { font-size: 14px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line);
+              color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line);
+           white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: #fafbfc; }
+  .tag { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px;
+         font-weight: 600; }
+  .t-in { background: var(--in-bg); color: var(--in); }
+  .t-out { background: var(--out-bg); color: var(--out); }
+  .t-bad { background: var(--bad-bg); color: var(--bad); }
+  .t-off { background: var(--bg); color: var(--muted); }
+  .empty { padding: 36px 16px; text-align: center; color: var(--muted); }
+  form.filters { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;
+                 padding: 14px 16px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type=date], input[type=search], input[type=password], input[type=month] {
+    padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; font: inherit;
+    background: #fff; }
+  button, .btn { padding: 8px 14px; border: 1px solid var(--accent); background: var(--accent);
+                 color: #fff; border-radius: 7px; font: inherit; cursor: pointer;
+                 text-decoration: none; display: inline-block; }
+  .btn.ghost { background: #fff; color: var(--accent); }
+  .note { color: var(--muted); font-size: 13px; margin-top: -8px; margin-bottom: 20px; }
+  .cause { color: var(--muted); font-size: 13px; white-space: normal; }
+  .hours { padding: 14px 16px; }
+  .hours .row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+                font-variant-numeric: tabular-nums; }
+  .hours .h { width: 48px; color: var(--muted); font-size: 13px; }
+  .hours .barwrap { flex: 1; display: flex; height: 16px; border-radius: 4px;
+                    overflow: hidden; background: var(--bg); }
+  .hours .ok { background: var(--in); }
+  .hours .no { background: var(--bad); }
+  .hours .c { width: 88px; text-align: right; color: var(--muted); font-size: 13px; }
+  .login { max-width: 360px; margin: 72px auto; }
+  .login .panel { padding: 24px; }
+  .login h1 { margin-bottom: 16px; }
+  .login input { width: 100%; margin-bottom: 12px; }
+  .login button { width: 100%; }
+  .error { background: var(--bad-bg); color: var(--bad); padding: 10px 12px;
+           border-radius: 7px; margin-bottom: 14px; font-size: 14px; }
+  @media (max-width: 640px) {
+    th:nth-child(n+5), td:nth-child(n+5) { display: none; }
+    .brand { width: 100%; }
+  }
+</style>
+</head>
+<body>
+{% if show_nav %}
+<header>
+  <div class="bar">
+    <span class="brand">Attendance</span>
+    <nav>
+      <a href="/admin" class="{{ 'on' if page == 'today' }}">Today</a>
+      <a href="/admin/register" class="{{ 'on' if page == 'register' }}">Register</a>
+      <a href="/admin/people" class="{{ 'on' if page == 'people' }}">People</a>
+      <a href="/admin/problems" class="{{ 'on' if page == 'problems' }}">Problems</a>
+      <a href="/admin/monthly" class="{{ 'on' if page == 'monthly' }}">Monthly</a>
+    </nav>
+    <span class="out"><a href="/admin/logout">Sign out</a></span>
+  </div>
+</header>
+{% endif %}
+<main class="{{ 'login' if page == 'login' }}">
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>
