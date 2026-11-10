@@ -93,7 +93,12 @@ async def my_page(
             context={"title": "My attendance", "show_nav": False, "page": "login", "error": None},
         )
 
-    record = await queries.my_attendance(session, tenant, person_id)
+    record = await queries.my_attendance(
+        session,
+        tenant,
+        person_id,
+        expiry_hours=settings.face.open_shift_expiry_hours,
+    )
 
     if record is None:
         # The person was removed while their session was still valid.

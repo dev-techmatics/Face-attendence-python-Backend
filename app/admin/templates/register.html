@@ -42,11 +42,15 @@
         <td>{{ d.full_name }}</td>
         <td>{{ d.external_id }}</td>
         <td>{{ d.worked.first_in | clock }}</td>
-        <td>{{ d.worked.last_out | clock or '—' }}</td>
+        <td>
+          {%- if d.worked.missed_out %}<span class="tag t-bad">Missed</span>
+          {%- elif d.worked.last_out %}{{ d.worked.last_out | clock }}
+          {%- else %}&mdash;{% endif %}
+        </td>
         <td>{{ d.worked.hours | hours }}</td>
         <td>
           {% if d.worked.open_now %}<span class="tag t-in">Still in</span>
-          {% elif d.worked.unpaired %}<span class="tag t-bad">Punch missing</span>{% endif %}
+          {% elif d.worked.unpaired %}<span class="tag t-bad">Check this day</span>{% endif %}
         </td>
       </tr>
     {% endfor %}

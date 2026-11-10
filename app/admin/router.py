@@ -287,7 +287,9 @@ async def register(
         query_string += "&failures=1"
 
     if paired:
-        days = await queries.worked_days(session, tenant, window, search)
+        days = await queries.worked_days(
+            session, tenant, window, search, settings.face.open_shift_expiry_hours
+        )
 
         return _page(
             request,
@@ -426,7 +428,12 @@ async def person_page(
     the register was the place to look. It is the page somebody opens when an employee
     queries their hours, so it carries both the day totals and the attempts behind them.
     """
-    history = await queries.person_history(session, tenant, external_id)
+    history = await queries.person_history(
+        session,
+        tenant,
+        external_id,
+        expiry_hours=settings.face.open_shift_expiry_hours,
+    )
 
     if history is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "There is no such person.")
@@ -437,7 +444,7 @@ async def person_page(
         "people",
         history.person.full_name,
         history=history,
-        retention_days=settings.face.probe_image_retention_days,
+        expiry_hours=settings.face.open_shift_expiry_hours,
     )
 
 

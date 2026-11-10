@@ -137,6 +137,39 @@ async def backdate(person_external_id: str, pairs: list[tuple[datetime, datetime
         await session.commit()
 
 
+async def backdate_in_only(person_external_id: str, times: list[datetime]) -> None:
+    """Write check-ins with no matching check-out - somebody who forgot to punch out.
+
+    Separate from :func:`backdate` because the interesting cases here are the unpaired ones,
+    and a helper that always writes pairs cannot produce them.
+    """
+    factory = get_session_factory()
+
+    async with factory() as session:
+        person = (
+            await session.execute(
+                select(Person).where(Person.external_id == person_external_id)
+            )
+        ).scalars().one()
+
+        for when in times:
+            session.add(
+                AttendanceEvent(
+                    tenant_id=person.tenant_id,
+                    person_id=person.id,
+                    direction=AttendanceDirection.In,
+                    decision=AttendanceDecision.Accepted,
+                    match_score=0.9,
+                    threshold=0.42,
+                    provider_id="test",
+                    created_at_utc=when,
+                    processing_ms=10,
+                )
+            )
+
+        await session.commit()
+
+
 # ---- the dashboard is off unless configured ----------------------------------------------
 
 
@@ -1277,7 +1310,12 @@ async def test_a_name_on_people_links_to_that_person(client):
     assert '/admin/people/TS4012"' in page.text
 
 
-async def test_a_person_page_shows_their_days_and_the_attempts_behind_them(client):
+async def test_a_person_page_shows_their_days_and_not_an_attempt_log(client):
+    """Days only. The log was taken off this page deliberately.
+
+    It answers "when did they come and go". The attempts behind those figures, failures
+    included, stay on the Attendance page, which this page links to filtered by their id.
+    """
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
 
@@ -1290,17 +1328,19 @@ async def test_a_person_page_shows_their_days_and_the_attempts_behind_them(clien
 
     assert page.status_code == 200
     assert "Alice Example" in page.text
-    assert "Every day worked" in page.text
-    assert "Every attempt, newest first" in page.text
-    # Seven hours, from one pair - the figure and its evidence on the same page.
+    assert "Check in and check out" in page.text
     assert "7h" in page.text
 
+    assert "Every attempt" not in page.text
+    # ...and the evidence is still reachable, filtered to this person.
+    assert "/admin/register?q=TS4012" in page.text
 
-async def test_a_person_pages_hours_cover_every_punch_not_just_the_listed_attempts(client):
-    """The cap on the attempts log must not reach the totals.
 
-    Capping both would quietly understate somebody's hours once they had a few hundred
-    punches, which is the one number on that page nobody should have to doubt.
+async def test_a_person_pages_hours_cover_every_punch_on_record(client):
+    """No cap on the totals.
+
+    This is where somebody checks a figure they are being paid on, so a total that quietly
+    left out the oldest punches would be worse than no total at all.
     """
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
@@ -1317,13 +1357,57 @@ async def test_a_person_pages_hours_cover_every_punch_not_just_the_listed_attemp
     factory = get_session_factory()
 
     async with factory() as session:
+        history = await queries.person_history(session, "default", "TS4012")
+
+    assert history.days_present == 25
+    assert history.total_hours == 200.0         # 25 days x 8 hours
+
+
+async def test_a_day_with_no_check_out_reads_as_missed_once_it_is_too_late(client):
+    """The bug this replaced: an unclosed day from weeks ago still said "Still in".
+
+    The cutoff is the same one the server uses to abandon a stale check-in, so a day turns
+    from "still in" to "missed" at exactly the moment the next punch would start a fresh
+    check-in rather than close this one.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    # Checked in two days ago and never out. Written directly: an In with no Out.
+    came = datetime.now(timezone.utc) - timedelta(days=2)
+    await backdate_in_only("TS4012", [came])
+
+    page = await client.get("/admin/people/TS4012")
+
+    # The badge in the Out column, not the "Missed check-outs" summary card above it.
+    assert 't-bad">Missed<' in page.text
+    assert "Still in" not in page.text
+
+    factory = get_session_factory()
+
+    async with factory() as session:
         history = await queries.person_history(
-            session, "default", "TS4012", attempt_limit=10
+            session, "default", "TS4012", expiry_hours=16
         )
 
-    assert len(history.attempts) == 10          # the log is capped
-    assert history.days_present == 25           # the totals are not
-    assert history.total_hours == 200.0         # 25 days x 8 hours
+    assert history.missed_outs == 1
+    assert history.days[0].missed_out is True
+    assert history.days[0].open_now is False
+    # No leaving time is invented, so the day earns nothing.
+    assert history.days[0].hours == 0.0
+
+
+async def test_a_check_in_from_an_hour_ago_still_reads_as_still_in(client):
+    """The other side of the same cutoff - do not call somebody missing who is at their desk."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    await backdate_in_only("TS4012", [datetime.now(timezone.utc) - timedelta(hours=1)])
+
+    page = await client.get("/admin/people/TS4012")
+
+    assert "Still in" in page.text
+    assert 't-bad">Missed<' not in page.text
 
 
 async def test_a_person_who_is_not_there_is_a_404(client):

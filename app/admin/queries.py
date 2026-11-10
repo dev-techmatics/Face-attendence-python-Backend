@@ -483,8 +483,14 @@ class WorkedDay:
     hours: float
     #: A punch with no matching other half - usually somebody forgetting to punch out.
     unpaired: bool
-    #: Still inside the building as far as the system knows.
+    #: Still inside the building as far as the system knows: checked in, no check-out yet,
+    #: and recently enough that one could still arrive.
     open_now: bool
+    #: Checked in and never checked out, long enough ago that the check-out is not coming.
+    #: The same cutoff the server uses to abandon a stale shift, so a day reads as "missed"
+    #: here at exactly the moment a new punch would start a fresh check-in rather than close
+    #: this one. Without it an unclosed day from three weeks ago still said "Still in".
+    missed_out: bool
 
 
 @dataclass(frozen=True)
@@ -504,13 +510,21 @@ class MyAttendance:
     absent_days: int
 
 
-def _pair_into_days(events: list[tuple[datetime, int]]) -> list[WorkedDay]:
+def _pair_into_days(
+    events: list[tuple[datetime, int]], expiry_hours: float | None = None
+) -> list[WorkedDay]:
     """Turn a stream of In/Out punches into one row per local day, with hours.
 
     Pairs an Out with the preceding In rather than measuring first-to-last, so a lunch break
     that was punched out and back in is not counted as time at work. An unmatched punch is
     reported rather than guessed at: inventing an end time would quietly inflate somebody's
     pay.
+
+    ``expiry_hours`` is ``FA_FACE__OPEN_SHIFT_EXPIRY_HOURS`` - how long the server lets a
+    check-in stay open before the next punch starts a fresh one instead of closing it. Past
+    that, a day with no check-out is reported as ``missed_out`` rather than as somebody who
+    is still inside. Leave it ``None`` and no day is ever called missed, which is the old
+    behaviour: every unclosed day reads as open, however long ago it was.
     """
     by_day: dict[date, dict] = {}
 
@@ -535,6 +549,18 @@ def _pair_into_days(events: list[tuple[datetime, int]]) -> list[WorkedDay]:
                 entry["seconds"] += (local - entry["open"]).total_seconds()
                 entry["open"] = None
 
+    now = datetime.now().astimezone()
+
+    def still_open(entry: dict) -> bool:
+        """Open, and a check-out could still plausibly arrive."""
+        if entry["open"] is None:
+            return False
+
+        if expiry_hours is None:
+            return True
+
+        return (now - entry["open"]) < timedelta(hours=expiry_hours)
+
     return [
         WorkedDay(
             day=day,
@@ -542,7 +568,8 @@ def _pair_into_days(events: list[tuple[datetime, int]]) -> list[WorkedDay]:
             last_out=entry["last_out"],
             hours=round(entry["seconds"] / 3600.0, 2),
             unpaired=entry["unpaired"],
-            open_now=entry["open"] is not None,
+            open_now=still_open(entry),
+            missed_out=entry["open"] is not None and not still_open(entry),
         )
         for day, entry in sorted(by_day.items(), reverse=True)
     ]
@@ -555,6 +582,7 @@ async def my_attendance(
     *,
     history_days: int = 14,
     late_after: time = time(9, 30),
+    expiry_hours: float | None = None,
 ) -> MyAttendance | None:
     """One person's own attendance: today, this week, this month, and recent days."""
     person = (
@@ -594,7 +622,7 @@ async def my_attendance(
         ).all()
     ]
 
-    worked = _pair_into_days(events)
+    worked = _pair_into_days(events, expiry_hours)
     by_day = {d.day: d for d in worked}
 
     def total(frm: date) -> tuple[float, int]:
@@ -789,6 +817,7 @@ async def worked_days(
     tenant: str,
     window: DayWindow,
     search: str | None = None,
+    expiry_hours: float | None = None,
 ) -> list[PersonDay]:
     """The register collapsed to one row per person per day.
 
@@ -831,7 +860,7 @@ async def worked_days(
     days = [
         PersonDay(external_id=external_id, full_name=full_name, worked=worked)
         for (external_id, full_name), events in by_person.items()
-        for worked in _pair_into_days(events)
+        for worked in _pair_into_days(events, expiry_hours)
     ]
 
     # Newest day first, and within a day by name - so reverse the day only. Sorting the
@@ -842,47 +871,36 @@ async def worked_days(
 
 
 @dataclass(frozen=True)
-class HistoryAttempt:
-    """One attendance attempt as the person's own page lists it."""
-
-    id: int
-    when: datetime
-    direction: str
-    result: str
-    accepted: bool
-    device: str | None
-    reason: str | None
-    has_photo: bool
-
-
-@dataclass(frozen=True)
 class PersonHistory:
-    """Everything one person has ever done, for the page reached from People.
+    """One person's attendance, for the page reached from People.
 
-    Deliberately two views of the same punches, the same split the register makes: ``days``
-    is what payroll reads, ``attempts`` is the evidence behind it. Somebody querying a figure
-    needs both in one place - the answer to "why does it say six hours" is always in the
-    attempts.
+    Days only. The attempt log that used to sit under this was removed on the user's
+    instruction: the page answers "when did they come and go", and the evidence behind those
+    figures, failures included, is one click away on the Attendance page filtered to their
+    id. Two views of the same punches on one screen made the answer harder to find, not
+    easier.
     """
 
     person: Footprint
     days: list[WorkedDay]
-    attempts: list[HistoryAttempt]
-    #: How many of the attempts below were shown. The log is capped; the day totals are not.
-    attempts_shown: int
     total_hours: float
     days_present: int
-    failures: int
+    #: Days they checked in and never checked out, past the point where one could still
+    #: arrive. These count no hours, so they are the days somebody has to rule on.
+    missed_outs: int
 
 
 async def person_history(
-    session: AsyncSession, tenant: str, external_id: str, attempt_limit: int = 400
+    session: AsyncSession,
+    tenant: str,
+    external_id: str,
+    expiry_hours: float | None = None,
 ) -> PersonHistory | None:
-    """One person's whole attendance record.
+    """One person's whole attendance record, paired into days.
 
-    The day totals are computed over **every** accepted punch, not over the capped log below.
-    Capping both would silently understate somebody's hours the moment they had more than a
-    few hundred punches, which is the one number on this page nobody should have to doubt.
+    Every accepted punch on record, with no cap: this is where somebody checks a figure they
+    are being paid on, and a total that quietly left out the oldest punches would be worse
+    than no total at all.
     """
     person = await person_footprint(session, tenant, external_id)
 
@@ -906,48 +924,12 @@ async def person_history(
         ).all()
     ]
 
-    days = _pair_into_days(accepted)
-
-    rows = (
-        await session.execute(
-            select(
-                AttendanceEvent.id,
-                AttendanceEvent.created_at_utc,
-                AttendanceEvent.direction,
-                AttendanceEvent.decision,
-                AttendanceEvent.device_id,
-                AttendanceEvent.failure_reason,
-                AttendanceEvent.probe_image_object_key,
-            )
-            .where(
-                AttendanceEvent.tenant_id == tenant,
-                AttendanceEvent.person_id == person.person_id,
-            )
-            .order_by(AttendanceEvent.created_at_utc.desc())
-            .limit(attempt_limit)
-        )
-    ).all()
-
-    attempts = [
-        HistoryAttempt(
-            id=row[0],
-            when=row[1],
-            direction=AttendanceDirection(row[2]).name,
-            result=OUTCOME.get(AttendanceDecision(row[3]), AttendanceDecision(row[3]).name),
-            accepted=AttendanceDecision(row[3]) == AttendanceDecision.Accepted,
-            device=row[4],
-            reason=row[5],
-            has_photo=row[6] is not None,
-        )
-        for row in rows
-    ]
+    days = _pair_into_days(accepted, expiry_hours)
 
     return PersonHistory(
         person=person,
         days=days,
-        attempts=attempts,
-        attempts_shown=len(attempts),
         total_hours=round(sum(day.hours for day in days), 2),
         days_present=len(days),
-        failures=sum(1 for attempt in attempts if not attempt.accepted),
+        missed_outs=sum(1 for day in days if day.missed_out),
     )
