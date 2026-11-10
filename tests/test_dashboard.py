@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from sqlalchemy import select, update
 
+from app.admin import queries
 from app.api.rate_limit import reset_rate_limits
 from app.core.config import Settings, reset_settings_cache
 from app.core.enums import AttendanceDecision, AttendanceDirection
@@ -1260,3 +1261,72 @@ async def test_the_dashboard_add_form_refuses_a_removed_persons_face_too(client)
     page = await client.get("/admin/people")
     assert "removed" in page.text
     assert "Alice Again" not in page.text
+
+
+# ---- one person's whole record -----------------------------------------------------------
+# Reached by clicking a name on People. The question "what has this person actually done?"
+# previously needed somebody to know that the Attendance page was where to filter by name.
+
+
+async def test_a_name_on_people_links_to_that_person(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    page = await client.get("/admin/people")
+
+    assert '/admin/people/TS4012"' in page.text
+
+
+async def test_a_person_page_shows_their_days_and_the_attempts_behind_them(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    came = datetime.now(timezone.utc).replace(
+        hour=3, minute=30, second=0, microsecond=0
+    ) - timedelta(days=1)
+    await backdate("TS4012", [(came, came + timedelta(hours=7))])
+
+    page = await client.get("/admin/people/TS4012")
+
+    assert page.status_code == 200
+    assert "Alice Example" in page.text
+    assert "Every day worked" in page.text
+    assert "Every attempt, newest first" in page.text
+    # Seven hours, from one pair - the figure and its evidence on the same page.
+    assert "7h" in page.text
+
+
+async def test_a_person_pages_hours_cover_every_punch_not_just_the_listed_attempts(client):
+    """The cap on the attempts log must not reach the totals.
+
+    Capping both would quietly understate somebody's hours once they had a few hundred
+    punches, which is the one number on that page nobody should have to doubt.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    start = datetime.now(timezone.utc).replace(
+        hour=3, minute=0, second=0, microsecond=0
+    ) - timedelta(days=30)
+    days = [
+        (start + timedelta(days=n), start + timedelta(days=n, hours=8))
+        for n in range(25)
+    ]
+    await backdate("TS4012", days)
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        history = await queries.person_history(
+            session, "default", "TS4012", attempt_limit=10
+        )
+
+    assert len(history.attempts) == 10          # the log is capped
+    assert history.days_present == 25           # the totals are not
+    assert history.total_hours == 200.0         # 25 days x 8 hours
+
+
+async def test_a_person_who_is_not_there_is_a_404(client):
+    await signed_in_hr(client)
+
+    assert (await client.get("/admin/people/NOBODY")).status_code == 404

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
-<h1>Attendance register</h1>
-<p class="when">{{ window.label }} &middot;
+<h1>Attendance</h1>
+<p class="when">What happened, punch by punch &middot; {{ window.label }} &middot;
   {% if paired %}{{ days | length }} day{{ '' if days | length == 1 else 's' }} worked
   {% else %}{{ rows | length }} attempt{{ '' if rows | length == 1 else 's' }}{% endif %}</p>
 

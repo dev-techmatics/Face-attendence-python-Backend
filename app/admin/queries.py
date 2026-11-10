@@ -839,3 +839,115 @@ async def worked_days(
     days.sort(key=lambda d: d.full_name)
     days.sort(key=lambda d: d.worked.day, reverse=True)
     return days
+
+
+@dataclass(frozen=True)
+class HistoryAttempt:
+    """One attendance attempt as the person's own page lists it."""
+
+    id: int
+    when: datetime
+    direction: str
+    result: str
+    accepted: bool
+    device: str | None
+    reason: str | None
+    has_photo: bool
+
+
+@dataclass(frozen=True)
+class PersonHistory:
+    """Everything one person has ever done, for the page reached from People.
+
+    Deliberately two views of the same punches, the same split the register makes: ``days``
+    is what payroll reads, ``attempts`` is the evidence behind it. Somebody querying a figure
+    needs both in one place - the answer to "why does it say six hours" is always in the
+    attempts.
+    """
+
+    person: Footprint
+    days: list[WorkedDay]
+    attempts: list[HistoryAttempt]
+    #: How many of the attempts below were shown. The log is capped; the day totals are not.
+    attempts_shown: int
+    total_hours: float
+    days_present: int
+    failures: int
+
+
+async def person_history(
+    session: AsyncSession, tenant: str, external_id: str, attempt_limit: int = 400
+) -> PersonHistory | None:
+    """One person's whole attendance record.
+
+    The day totals are computed over **every** accepted punch, not over the capped log below.
+    Capping both would silently understate somebody's hours the moment they had more than a
+    few hundred punches, which is the one number on this page nobody should have to doubt.
+    """
+    person = await person_footprint(session, tenant, external_id)
+
+    if person is None:
+        return None
+
+    # Ascending: _pair_into_days walks the stream in order, pairing each Out with the In
+    # before it. Handed the rows newest-first it would pair nothing.
+    accepted = [
+        (row[0], row[1])
+        for row in (
+            await session.execute(
+                select(AttendanceEvent.created_at_utc, AttendanceEvent.direction)
+                .where(
+                    AttendanceEvent.tenant_id == tenant,
+                    AttendanceEvent.person_id == person.person_id,
+                    AttendanceEvent.decision == AttendanceDecision.Accepted,
+                )
+                .order_by(AttendanceEvent.created_at_utc)
+            )
+        ).all()
+    ]
+
+    days = _pair_into_days(accepted)
+
+    rows = (
+        await session.execute(
+            select(
+                AttendanceEvent.id,
+                AttendanceEvent.created_at_utc,
+                AttendanceEvent.direction,
+                AttendanceEvent.decision,
+                AttendanceEvent.device_id,
+                AttendanceEvent.failure_reason,
+                AttendanceEvent.probe_image_object_key,
+            )
+            .where(
+                AttendanceEvent.tenant_id == tenant,
+                AttendanceEvent.person_id == person.person_id,
+            )
+            .order_by(AttendanceEvent.created_at_utc.desc())
+            .limit(attempt_limit)
+        )
+    ).all()
+
+    attempts = [
+        HistoryAttempt(
+            id=row[0],
+            when=row[1],
+            direction=AttendanceDirection(row[2]).name,
+            result=OUTCOME.get(AttendanceDecision(row[3]), AttendanceDecision(row[3]).name),
+            accepted=AttendanceDecision(row[3]) == AttendanceDecision.Accepted,
+            device=row[4],
+            reason=row[5],
+            has_photo=row[6] is not None,
+        )
+        for row in rows
+    ]
+
+    return PersonHistory(
+        person=person,
+        days=days,
+        attempts=attempts,
+        attempts_shown=len(attempts),
+        total_hours=round(sum(day.hours for day in days), 2),
+        days_present=len(days),
+        failures=sum(1 for attempt in attempts if not attempt.accepted),
+    )

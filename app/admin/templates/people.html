@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block body %}
 <h1>People</h1>
-<p class="when">{{ active }} active &middot; {{ rows | length }} on record &middot; unfinished
-  registrations first</p>
+<p class="when">Who is set up on the system &middot; {{ active }} active &middot;
+  {{ rows | length }} on record &middot; unfinished registrations first</p>
 
 {% if flash %}
 <p class="flash {{ 'bad' if flash.kind == 'bad' else 'ok' }}">{{ flash.message }}</p>
@@ -34,7 +34,7 @@
     <tbody>
     {% for r in rows %}
       <tr{% if r.archived %} class="dim"{% endif %}>
-        <td>{{ r.name }}</td>
+        <td><a href="/admin/people/{{ r.external_id }}">{{ r.name }}</a></td>
         <td>{{ r.external_id }}</td>
         <td>
           {% if r.archived %}<span class="tag t-off">Removed</span>
@@ -64,6 +64,10 @@
   <p class="empty">Nobody is registered yet.</p>
   {% endif %}
 </div>
+
+<p class="note">Click a name for everything that person has ever done &mdash; every day
+  worked, the hours, and every attempt behind them. This page is about <em>who is set up</em>;
+  <a href="/admin/register">Attendance</a> is about <em>what happened</em>.</p>
 
 <p class="note"><strong>Remove</strong> stops somebody clocking in and takes them off the
   Today board. Every hour they ever worked stays on record, and &ldquo;Put back&rdquo; undoes

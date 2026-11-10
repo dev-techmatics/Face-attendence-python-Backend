@@ -293,7 +293,7 @@ async def register(
             request,
             "register.html",
             "register",
-            "Register",
+            "Attendance",
             window=window,
             paired=True,
             days=days,
@@ -312,7 +312,7 @@ async def register(
         request,
         "register.html",
         "register",
-        "Register",
+        "Attendance",
         window=window,
         paired=False,
         days=[],
@@ -407,6 +407,37 @@ async def people(
         active=sum(1 for r in rows if not r["archived"]),
         # Said once, after the write that caused it, and then gone.
         flash=request.session.pop("flash", None),
+    )
+
+
+@router.get("/people/{external_id}", response_class=HTMLResponse)
+async def person_page(
+    request: Request,
+    external_id: str,
+    session: SessionDep,
+    tenant: TenantDep,
+    settings: SettingsDep,
+    _: SignedIn,
+) -> Response:
+    """One person's whole record, reached by clicking their name on People.
+
+    The question this answers - "what has this person actually done?" - was previously only
+    answerable by going to the register and filtering by their name, which meant knowing that
+    the register was the place to look. It is the page somebody opens when an employee
+    queries their hours, so it carries both the day totals and the attempts behind them.
+    """
+    history = await queries.person_history(session, tenant, external_id)
+
+    if history is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "There is no such person.")
+
+    return _page(
+        request,
+        "person.html",
+        "people",
+        history.person.full_name,
+        history=history,
+        retention_days=settings.face.probe_image_retention_days,
     )
 
 

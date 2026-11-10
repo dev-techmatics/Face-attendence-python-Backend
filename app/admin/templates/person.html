@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block body %}
+{% set p = history.person %}
+<h1>{{ p.full_name }}</h1>
+<p class="when">{{ p.external_id }}{% if p.department %} &middot; {{ p.department }}{% endif %}
+  &middot; <a href="/admin/people">back to People</a></p>
+
+<div class="cards">
+  <div class="card"><div class="n">{{ history.days_present }}</div><div class="l">Days present</div></div>
+  <div class="card"><div class="n">{{ history.total_hours | hours }}</div><div class="l">Hours in total</div></div>
+  <div class="card"><div class="n">{{ p.punches }}</div><div class="l">Attempts on record</div></div>
+  <div class="card"><div class="n">{{ history.failures }}</div><div class="l">Of those, failed</div></div>
+</div>
+
+<div class="panel">
+  <h2>Record</h2>
+  <table>
+    <tbody>
+      <tr><td>Employee ID</td><td><strong>{{ p.external_id }}</strong></td></tr>
+      <tr><td>Status</td><td>
+        {% if p.status.name == 'Active' %}<span class="tag t-in">Active</span>
+        {% elif p.status.name == 'Archived' %}<span class="tag t-off">Removed</span>
+        {% else %}<span class="tag t-bad">{{ p.status.name }}</span>{% endif %}</td></tr>
+      <tr><td>Registration</td><td>{{ p.enrollment_status.name }}
+        &middot; {{ p.photos }} face photo{{ '' if p.photos == 1 else 's' }}</td></tr>
+      <tr><td>First seen</td>
+        <td>{% if p.first_punch %}{{ p.first_punch | stamp }}{% else %}&mdash;{% endif %}</td></tr>
+      <tr><td>Last seen</td>
+        <td>{% if p.last_punch %}{{ p.last_punch | stamp }}{% else %}&mdash;{% endif %}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Every day worked</h2>
+  {% if history.days %}
+  <table>
+    <thead><tr><th>Day</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr></thead>
+    <tbody>
+    {% for d in history.days %}
+      <tr>
+        <td>{{ d.day | day }}</td>
+        <td>{{ d.first_in | clock }}</td>
+        <td>{{ d.last_out | clock or '—' }}</td>
+        <td>{{ d.hours | hours }}</td>
+        <td>
+          {% if d.open_now %}<span class="tag t-in">Still in</span>
+          {% elif d.unpaired %}<span class="tag t-bad">Punch missing</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">{{ p.full_name }} has never clocked in.</p>
+  {% endif %}
+</div>
+
+<p class="note">Hours pair each in with the out that followed it, so a break punched out and
+  back in is not counted as time at work. These totals cover every punch on record, not just
+  the attempts listed below.</p>
+
+<div class="panel">
+  <h2>Every attempt, newest first</h2>
+  {% if history.attempts %}
+  <table>
+    <thead><tr><th>When</th><th>In/Out</th><th>Result</th><th>Device</th><th>Why</th>
+      <th>Photo</th></tr></thead>
+    <tbody>
+    {% for a in history.attempts %}
+      <tr>
+        <td>{{ a.when | stamp }}</td>
+        <td>{{ a.direction }}</td>
+        <td>
+          {% if a.accepted %}<span class="tag t-in">{{ a.result }}</span>
+          {% else %}<span class="tag t-bad">{{ a.result }}</span>{% endif %}
+        </td>
+        <td>{{ a.device or '' }}</td>
+        <td class="reason">{{ a.reason or '' }}</td>
+        <td>{% if a.has_photo %}<a href="/admin/photo/{{ a.id }}">show</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">Nothing recorded for this person.</p>
+  {% endif %}
+</div>
+
+<p class="note">Failures are kept on purpose: they are the evidence when somebody says the
+  machine did not recognise them. The newest {{ history.attempts_shown }} are shown. Photos
+  are deleted automatically after {{ retention_days }} days.</p>
+{% endblock %}

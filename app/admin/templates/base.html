@@ -50,6 +50,10 @@
   .t-in { background: var(--in-bg); color: var(--in); }
   .t-out { background: var(--out-bg); color: var(--out); }
   .t-bad { background: var(--bad-bg); color: var(--bad); }
+  /* The "why" column on a person's history: present for failures, empty for most rows, so
+     it must not shout. Wrapped rather than truncated - a refusal reason is the one thing
+     somebody querying their hours needs to read in full. */
+  .reason { color: var(--muted); font-size: 12px; max-width: 320px; }
   .t-off { background: var(--bg); color: var(--muted); }
   .empty { padding: 36px 16px; text-align: center; color: var(--muted); }
   form.filters { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;
@@ -128,7 +132,11 @@
     <span class="brand">Attendance</span>
     <nav>
       <a href="/admin" class="{{ 'on' if page == 'today' }}">Today</a>
-      <a href="/admin/register" class="{{ 'on' if page == 'register' }}">Register</a>
+      {#- "Attendance", not "Register". This page is the attendance register - the noun -
+          but "register" is also what this system calls enrolling a face, so the old label
+          read as a second People page and the two were genuinely hard to tell apart. The
+          URL stays /admin/register so no bookmark breaks. #}
+      <a href="/admin/register" class="{{ 'on' if page == 'register' }}">Attendance</a>
       <a href="/admin/people" class="{{ 'on' if page == 'people' }}">People</a>
       <a href="/admin/problems" class="{{ 'on' if page == 'problems' }}">Problems</a>
       <a href="/admin/monthly" class="{{ 'on' if page == 'monthly' }}">Monthly</a>
