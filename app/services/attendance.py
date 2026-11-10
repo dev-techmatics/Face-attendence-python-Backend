@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from uuid import uuid4
 
@@ -32,6 +33,36 @@ from app.services.validator import FaceCaptureValidator
 from app.storage.base import FaceImageStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _ShiftDecision:
+    """What the shift-length rules concluded about one punch."""
+
+    direction: AttendanceDirection
+
+    #: Set when the punch must be refused, carrying the reason the person will read.
+    refusal: str | None = None
+
+    #: Set when the server recorded something other than what the device asked for. It is
+    #: shown to the person, because a kiosk that says "Checked out" while recording a
+    #: check-in is worse than a kiosk that says nothing.
+    note: str | None = None
+
+
+def _spoken_duration(span: timedelta) -> str:
+    """``"35 minutes"``, ``"2 hours"``, ``"3h 20m"`` - read off a kiosk screen, not parsed."""
+    minutes = int(span.total_seconds() // 60)
+
+    if minutes < 60:
+        return f"{minutes} minute{'' if minutes == 1 else 's'}"
+
+    hours, rest = divmod(minutes, 60)
+
+    if rest == 0:
+        return f"{hours} hour{'' if hours == 1 else 's'}"
+
+    return f"{hours}h {rest}m"
 
 
 class AttendanceService:
@@ -234,7 +265,24 @@ class AttendanceService:
                     direction=AttendanceDirection(recent.direction),
                 )
 
-        direction = await self._resolve_direction(command, matched)
+        shift = await self._decide_shift(command, matched, now)
+
+        if shift.refusal is not None:
+            return await self._record(
+                command,
+                now,
+                started_at,
+                matched,
+                AttendanceDecision.TooSoon,
+                score=match.score,
+                threshold=threshold,
+                matched_pose=match.pose,
+                matched_template_id=match.template_id,
+                failure_reason=shift.refusal,
+                top_scores=match.top_scores,
+                include_diagnostics=include_diagnostics,
+                direction=shift.direction,
+            )
 
         return await self._record(
             command,
@@ -249,7 +297,8 @@ class AttendanceService:
             failure_reason=None,
             top_scores=match.top_scores,
             include_diagnostics=include_diagnostics,
-            direction=direction,
+            direction=shift.direction,
+            note=shift.note,
         )
 
     async def preview_match(
@@ -340,6 +389,86 @@ class AttendanceService:
             else AttendanceDirection.In
         )
 
+    async def _decide_shift(
+        self, command: MarkAttendanceCommand, person: Person, now
+    ) -> _ShiftDecision:
+        """Apply the shift-length rules on top of the In/Out choice.
+
+        Two rules, and the order between them is the whole design:
+
+        1. A check-in left open longer than ``open_shift_expiry_hours`` is **abandoned**.
+           Nobody worked sixteen hours and forgot to go home; they forgot to check out. The
+           stale In is left unpaired - the register already shows that as "Punch missing" -
+           and this punch starts a new one, whichever direction the device asked for. This is
+           the only place the server overrules the app's choice.
+        2. A check-out sooner than ``minimum_shift_minutes`` after its check-in is
+           **refused**, and the person stays checked in so the shift can still be closed
+           properly later.
+
+        Rule 1 has to come before rule 2. Measured against a stale check-in, the next
+        morning's punch is simultaneously "sixteen hours late" and "too soon", and deciding
+        it the other way round would refuse it - leaving somebody unable to start work, with
+        no way to clear it from the kiosk.
+
+        Nothing here invents a punch. The alternative design - writing a closing Out at
+        check-in plus sixteen hours - would read better on the register and would put hours
+        nobody worked into payroll.
+
+        A check-out with no check-in open is deliberately left alone. It pairs with nothing,
+        so it credits no hours and the register already flags it; overruling it would mean
+        this service second-guessing the app's own in/out state, which
+        ``infer_direction=false`` exists to avoid.
+        """
+        wanted = await self._resolve_direction(command, person)
+        last = await self._attendance.get_last_accepted(person.id)
+
+        open_in = (
+            last
+            if last is not None
+            and AttendanceDirection(last.direction) == AttendanceDirection.In
+            else None
+        )
+
+        # Rule 1.
+        if open_in is not None and self._settings.open_shift_expiry_hours > 0:
+            open_for = now - open_in.created_at_utc
+
+            if open_for >= timedelta(hours=self._settings.open_shift_expiry_hours):
+                logger.info(
+                    "Person %s had a check-in open for %s; treating it as abandoned and "
+                    "starting a fresh one",
+                    person.id,
+                    _spoken_duration(open_for),
+                )
+
+                return _ShiftDecision(
+                    AttendanceDirection.In,
+                    note=(
+                        f"Your last check-in was {_spoken_duration(open_for)} ago and was "
+                        "never closed. This is a new check-in."
+                    ),
+                )
+
+        # Rule 2.
+        if (
+            wanted == AttendanceDirection.Out
+            and open_in is not None
+            and self._settings.minimum_shift_minutes > 0
+        ):
+            worked = now - open_in.created_at_utc
+            minimum = timedelta(minutes=self._settings.minimum_shift_minutes)
+
+            if worked < minimum:
+                return _ShiftDecision(
+                    AttendanceDirection.Out,
+                    refusal=(
+                        f"Checked in {_spoken_duration(worked)} ago, and a check-out needs "
+                        f"at least {_spoken_duration(minimum)}. You are still checked in."
+                    ),
+                )
+
+        return _ShiftDecision(wanted)
+
     async def _record(
         self,
         command: MarkAttendanceCommand,
@@ -355,6 +484,7 @@ class AttendanceService:
         top_scores: list[FaceScore],
         include_diagnostics: bool = False,
         direction: AttendanceDirection | None = None,
+        note: str | None = None,
     ) -> MarkAttendanceResult:
         resolved_direction = direction or command.direction or AttendanceDirection.In
 
@@ -433,7 +563,9 @@ class AttendanceService:
             threshold=threshold,
             matched_pose=matched_pose,
             recorded_at_utc=now,
-            message=failure_reason,
+            # On a refusal this is the reason; on an accepted punch it is only set when the
+            # server recorded a different direction than the device asked for. Never both.
+            message=failure_reason or note,
             processing_ms=elapsed_ms,
             top_scores=list(top_scores) if include_diagnostics else [],
         )

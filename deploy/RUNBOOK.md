@@ -76,7 +76,28 @@ powershell -Command "Get-Content E:\Fa-py\data\logs\server.log -Tail 40 -Wait"
 
 ## Still to do — needs Administrator
 
-Autostart is **not** installed. Run this **as Administrator**, once:
+> **This already cost two days.** The PC rebooted on 2026-11-08 at 17:15 and the backend did
+> not come back. It was found down on 2026-11-10: nothing listening on 8443, no process, no
+> scheduled task. No attendance was recorded in between and nobody reported it, because a dead
+> backend looks to a kiosk exactly like a rejected key — the people standing at it blame the
+> app. Three steps below, in order, and the first two need elevation.
+
+**1. Let SYSTEM reach the database.** Do this *before* step 2, or step 2 will refuse:
+
+```bash
+sqlcmd -S .\SQLEXPRESS -d FaceAttendance -E -i E:\Fa-py\deploy\grant-system-db-access.sql
+```
+
+An at-boot task runs as `NT AUTHORITY\SYSTEM`, and the connection string uses Windows
+integrated auth with no password stored — so the task's Windows account *is* the database
+login. Measured on this instance: `FaceAttendance` is owned by `QA-PLAYWRIGHT\ADMIN`, `dbo` is
+its only user, and SYSTEM is **not** a sysadmin, so SYSTEM cannot open the database at all.
+Skip this and the service starts, answers `/v1/health`, and then fails every request that
+touches a person or a punch — which reads like a broken database rather than a missing grant.
+The grant is reader + writer, not `db_owner`: with `FA_DATABASE__MIGRATE_ON_STARTUP=false` the
+running service never issues DDL.
+
+**2. Install autostart.** Run **as Administrator**, once:
 
 ```bash
 E:\Fa-py\deploy\install-autostart.cmd
@@ -85,7 +106,27 @@ E:\Fa-py\deploy\install-autostart.cmd
 Elevated it registers an at-boot task running as SYSTEM, so the backend comes up after an
 unattended reboot. Run without elevation and you get a per-user at-logon task instead — which
 means the kiosks stay down until somebody signs in to this PC, and auto sign-in is off here
-(deliberately). Until this is done, **the service does not survive a reboot.**
+(deliberately). Until this is done, **the service does not survive a reboot.** The elevated
+path now checks SYSTEM's database access first and refuses rather than registering a task that
+would start a backend that cannot read attendance.
+
+**3. Install the watchdog.** Also **as Administrator**, after step 2:
+
+```bash
+E:\Fa-py\deploy\install-watchdog.cmd
+```
+
+An at-boot task covers a reboot. It does not cover a process that dies, wedges, or loses the
+database while the machine stays up — which is the other half of what happened. The watchdog
+probes `https://127.0.0.1:8443/v1/health` every five minutes and restarts the backend if it
+does not answer. Both tasks must run as the same account: the watchdog restarts the backend,
+so its identity becomes the backend's database login.
+
+It writes to `data\logs\watchdog.log` **only when something is wrong**, so an absent or empty
+file is the good case and any line in it is worth reading. Tested on 2026-11-10 against all
+three paths — healthy (silent), dead (recovered in 6s), and someone else's process on 8443
+(refuses to kill it, refuses to start a second copy, says attendance is down). That test run is
+kept at `data\logs\watchdog.test-2026-11-10.log`.
 
 Two more things worth doing while elevated:
 
@@ -199,6 +240,7 @@ not have to be rewritten:
 | `GET /v1/health` | a headcount of enrolled people |
 | `POST /v1/faces/enroll` | create person + capture each pose |
 | `POST /v1/faces/identify` | a 1:N match that records nothing |
+| `POST /v1/faces/verify` | is this face already registered? records nothing |
 | `POST /v1/attendance/punch` | mark attendance, 1:1 against the claimed id |
 
 Two settings exist for the app's sake, both in `.env.production`:
@@ -208,7 +250,72 @@ Two settings exist for the app's sake, both in `.env.production`:
   this to all three once the app insists on three captures; three angles is the more accurate
   enrolment, it just cannot be a precondition today.
 - `FA_FACE__INFER_DIRECTION=false` — the app's screen has already told the user whether this
-  is a check-in or a check-out, so its value is honoured instead of being inferred.
+  is a check-in or a check-out, so its value is honoured instead of being inferred. The one
+  exception is an abandoned shift, below.
+
+### "Is this face already registered?" — `/v1/faces/verify`
+
+Records nothing. Meant for the register screen, *before* anybody fills in a form, so that a
+person who is already on file is told so instead of typing everything and being refused at
+the end.
+
+It answers with the same population and the same threshold the registration guard uses —
+**everybody, removed people included**, at `duplicate_enrollment_threshold` (0.60). A looser
+check would be worse than none: it would clear somebody and then have registration refuse
+them, which reads as a broken form. Send `employee_id` as well to ask the narrower question
+instead — *is this face that person?* — a 1:1 check at `verification_threshold`.
+
+The reply separates two things on purpose:
+
+- `success` — the check ran.
+- `registered` — the answer, and it is absent when `success` is false.
+
+That split is the whole point. If a camera or model failure came back as "not registered" the
+app would offer to register and create the duplicate the endpoint exists to prevent. When
+`registered` is true, `status` distinguishes `active` (just clock in) from `removed` /
+`suspended` (an admin must restore the record — sending that person round the register screen
+again is how one person ends up with two records and their hours split). For a non-active
+match the name and ID are withheld: at that threshold the match is almost certainly the same
+person, but almost certainly is not a licence to read a colleague's name off a kiosk screen,
+and the People page has it anyway.
+
+### How long a shift has to be
+
+Two rules on top of the app's in/out choice, both in `.env.production`:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `FA_FACE__MINIMUM_SHIFT_MINUTES` | `120` | A check-out sooner than this after its check-in is refused. They stay checked in. |
+| `FA_FACE__OPEN_SHIFT_EXPIRY_HOURS` | `16` | A check-in open longer than this is abandoned; the next punch starts a fresh one. |
+
+Set either to `0` to switch it off.
+
+The refusal is its own outcome, `TooSoon`, not `Rejected` — "your face was not recognised"
+would send somebody off to re-register for a policy decision, and would bury it among the
+genuine recognition failures on the Problems page. Its message carries the actual numbers
+("Checked in 35 minutes ago, and a check-out needs at least 2 hours"), because "too soon" on
+its own just invites an immediate retry.
+
+Three things worth knowing before changing these numbers:
+
+- **The minimum refuses honest punches**, and nobody at the kiosk can overrule it. Somebody
+  who genuinely leaves after an hour needs an admin — and the dashboard has no way to add or
+  edit a punch, so today that means payroll handles it outside the system. Keep the minimum
+  below the shortest shift anybody really works, and watch the Problems page: a steady
+  trickle of "Too soon to check out" means the number is wrong, not that people are.
+- **The 2-minute double-tap guard still runs first.** A repeat punch within
+  `duplicate_punch_window_minutes` answers "already recorded a moment ago" rather than "too
+  soon", which is the better message for a double tap. So the two-hour rule is only ever seen
+  between 2 minutes and 2 hours.
+- **An abandoned shift is left unpaired, not closed.** No Out is invented at check-in plus
+  sixteen hours. That would make the register look tidy and would put sixteen hours nobody
+  worked into the month's figures; the register flags it as "Punch missing" instead, for a
+  human to judge. The abandoned punch is also the only case where this service overrules the
+  app's direction, and the reply says so in both `type` and `message`.
+
+A successful punch now returns `type` — `check_in` or `check_out`, the direction actually
+stored. The app should set its own state from that rather than from which button was pressed,
+or it will show "checked out" over a record that says checked in.
 
 ### Switching the kiosks over
 

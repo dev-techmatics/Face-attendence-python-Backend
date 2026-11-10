@@ -35,6 +35,7 @@ SELECT
         WHEN 6 THEN 'Photo too dark or blurry'
         WHEN 7 THEN 'Suspected photo of a photo'
         WHEN 8 THEN 'Face service error'
+        WHEN 9 THEN 'Too soon to check out'
         ELSE CAST(e.Decision AS varchar(4))
     END                                                          AS [Result],
     e.DeviceId                                                   AS [Device]

@@ -42,4 +42,8 @@ deploy/API-KEYS.txt
 # Written by deploy/app_team_note.py: a handover note with the kiosk key filled in.
 deploy/APP-TEAM-NOTE.txt
 deploy/certs/
+# Staging folder for a handover: copies of the note (live device key) and the public
+# certificate, kept apart from deploy/ so that nobody attaches API-KEYS.txt by mistake -
+# that file holds the ADMIN key, which can download every stored face photograph.
+deploy/to-send/
 data/

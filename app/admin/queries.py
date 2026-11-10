@@ -30,6 +30,7 @@ OUTCOME = {
     AttendanceDecision.LowQuality: "Photo too dark or blurry",
     AttendanceDecision.SpoofSuspected: "Suspected photo of a photo",
     AttendanceDecision.ProviderError: "Face service error",
+    AttendanceDecision.TooSoon: "Too soon to check out",
 }
 
 #: What a failure usually means in the real world, for the Problems screen. The point of that
@@ -41,6 +42,10 @@ LIKELY_CAUSE = {
     AttendanceDecision.NotEnrolled: "These people were never finished registering.",
     AttendanceDecision.Duplicate: "People tapping twice. Harmless, but it can mean the screen gives no feedback.",
     AttendanceDecision.ProviderError: "The recognition engine failed. Check the service log.",
+    AttendanceDecision.TooSoon: (
+        "People trying to check out before the minimum shift length. A steady trickle means "
+        "the minimum is set longer than the shifts people actually work."
+    ),
 }
 
 ENROLLMENT_LABEL = {

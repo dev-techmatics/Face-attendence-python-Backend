@@ -169,6 +169,26 @@ class FaceRecognitionSettings(BaseSettings):
     #: Infer In/Out from the previous event instead of trusting the client.
     infer_direction: bool = True
 
+    #: Shortest gap allowed between a check-in and the check-out that closes it. A check-out
+    #: sooner than this is refused as TooSoon and the person stays checked in, so the shift
+    #: is still there to be closed properly later. 0 disables the rule.
+    #:
+    #: This is a *policy* floor, not an anti-fraud measure: somebody who genuinely leaves
+    #: after an hour still has to be checked out by an admin, which is the intended
+    #: friction. Set it well below the shortest real shift - it refuses honest punches, and
+    #: the person standing at the kiosk cannot overrule it.
+    minimum_shift_minutes: int = 120
+
+    #: How long a check-in stays open. Past this the shift is treated as abandoned - nobody
+    #: forgot to go home, they forgot to check out - so the next punch starts a fresh
+    #: check-in instead of closing a stale one. 0 disables the rule, which means an
+    #: unclosed check-in stays open forever and the next punch always reads as a check-out.
+    #:
+    #: Deliberately does NOT write a closing punch. Inventing an Out would put hours nobody
+    #: worked into payroll; leaving the In unpaired is what the register already flags as
+    #: "Punch missing", and a human decides what it should have been.
+    open_shift_expiry_hours: int = 16
+
     top_n: int = 5
 
     # ---- Retention -------------------------------------------------------------------

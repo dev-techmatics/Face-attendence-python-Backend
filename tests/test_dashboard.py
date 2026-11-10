@@ -1004,11 +1004,18 @@ async def test_acting_on_somebody_who_is_not_there_is_a_404(client):
 async def test_a_full_day_is_one_line_with_in_out_and_hours(client):
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
-    await punch(client, "TS4012", "alice", "check_in", "2026-10-30T09:00:00Z")
-    await punch(client, "TS4012", "alice", "check_out", "2026-10-30T17:30:00Z")
 
-    attempts = await client.get("/admin/register")
-    days = await client.get("/admin/register?view=days")
+    # Written directly rather than punched through the API, for two reasons: the server
+    # stamps its own clock so two calls land in the same second, and a check-out that soon
+    # after a check-in is refused by the minimum-shift rule.
+    came = datetime.now(timezone.utc).replace(
+        hour=3, minute=30, second=0, microsecond=0
+    ) - timedelta(days=1)
+    await backdate("TS4012", [(came, came + timedelta(hours=8, minutes=30))])
+
+    day = came.astimezone().date().isoformat()
+    attempts = await client.get(f"/admin/register?from={day}&to={day}")
+    days = await client.get(f"/admin/register?view=days&from={day}&to={day}")
 
     # Two rows in the log, one row in the day view - that is the whole difference.
     assert attempts.text.count("TS4012") == 2

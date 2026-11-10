@@ -49,7 +49,13 @@ from app.api.deps import (
     to_face_image,
 )
 from app.core.config import Settings
-from app.core.enums import AttendanceDecision, AttendanceDirection, EnrollmentStatus, FacePose
+from app.core.enums import (
+    AttendanceDecision,
+    AttendanceDirection,
+    EnrollmentStatus,
+    FacePose,
+    PersonStatus,
+)
 from app.core.errors import DomainException, FaceError, FaceProcessingException
 from app.core.faces import FaceImage
 from app.core.security import ADMIN_ROLE, DEVICE_ROLE, match_api_key
@@ -279,6 +285,115 @@ async def identify(
     return ok("Matched.", employee_id=person.external_id, name=person.full_name)
 
 
+@router.post("/faces/verify", summary="Is this face already registered?")
+async def verify(
+    enrollment: EnrollmentServiceDep,
+    tenant: TenantDep,
+    settings: SettingsDep,
+    _: KioskDep,
+    face: Annotated[UploadFile, File()],
+    employee_id: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    """Check a face against the people already on file, before anybody fills in a form.
+
+    Records nothing and changes nothing. Two questions, chosen by whether ``employee_id`` is
+    sent:
+
+    * **omitted** - *is this face already registered, under any ID?* Searched against
+      **everybody**, including people whose records were removed, at the duplicate-registration
+      threshold. This is the one to call on the register screen: it gives the same verdict
+      registration itself will, so nobody types a full form only to be refused at the end.
+    * **sent** - *is this face the person with this ID?* A 1:1 check against that one person,
+      at the lower verification threshold. Use it to confirm identity, not to discover it.
+
+    The response is **not** the usual success/failure pair, and the difference matters:
+
+    * ``success`` says the check ran.
+    * ``registered`` is the answer.
+
+    They are separate so that a camera or model failure can never be read as "this face is
+    new" - which is precisely how a second record for the same person gets created. On
+    ``success: false``, do not offer to register; say the check failed and let them retry.
+
+    When ``registered`` is true, ``status`` says which of two very different endings applies:
+    ``active`` means just clock in, while ``removed`` or ``suspended`` means an admin has to
+    restore the record - telling that person to register again would recreate the split
+    identity this endpoint exists to prevent.
+    """
+    claimed = normalise_employee_id(employee_id) if employee_id and employee_id.strip() else None
+
+    try:
+        image = await to_face_image(face, settings)
+        found = await enrollment.find_existing_registration(tenant, image, claimed)
+    except FaceProcessingException as exc:
+        if exc.error in (FaceError.NoFaceDetected, FaceError.CorruptImage):
+            return no("No face found. Please look at the camera.")
+        if exc.error in (FaceError.LowQuality, FaceError.MultipleFacesDetected):
+            return no("Please stand closer, with just you in the frame, and try again.")
+        if exc.error == FaceError.ImageTooLarge:
+            return no("The photo was too large. Please try again.", 413)
+        if exc.error == FaceError.UnsupportedFormat:
+            return no("That file isn't a photo. Please try again.", 415)
+        logger.error("Verify failed: %s", exc.message)
+        return no("Face service is not responding. Please try again.", 503)
+
+    if not found.registered:
+        return ok(
+            "This face is not registered yet."
+            if claimed is None
+            else f"This face does not match {claimed}.",
+            registered=False,
+        )
+
+    status_word = {
+        PersonStatus.Active: "active",
+        PersonStatus.Suspended: "suspended",
+        PersonStatus.Archived: "removed",
+    }.get(found.status or PersonStatus.Active, "active")
+
+    if found.can_mark_attendance:
+        message = (
+            f"Already registered as {found.full_name}. Just put your face to the camera "
+            "to clock in."
+            if claimed is None
+            else f"Confirmed: this is {found.full_name}."
+        )
+    elif status_word in ("removed", "suspended"):
+        # Says nothing about who the record belongs to, because when the search found a
+        # removed person the screen is in front of somebody being told "no" - and the record
+        # may not be theirs.
+        message = (
+            "This face belongs to a record that was removed. Ask your admin to put that "
+            "record back instead of registering again."
+        )
+    else:
+        message = (
+            "This face is on a registration that was never finished. Ask your admin to "
+            "complete it rather than starting again."
+        )
+
+    # Who the record belongs to is returned only when naming them tells the person standing
+    # at the camera something about themselves: a live match is their own identity, and a 1:1
+    # check can only confirm an ID the caller already sent. For a removed or half-finished
+    # record the answer is "no, see an admin" and the name is withheld - at this threshold the
+    # match is almost certainly the same person, but "almost certainly" is not a licence to
+    # read a colleague's name off a screen, and the admin can find the record on the People
+    # page without it. Same reasoning as the duplicate-registration refusal.
+    identity = (
+        {"employee_id": found.external_id, "name": found.full_name}
+        if found.can_mark_attendance or found.one_to_one
+        else {}
+    )
+
+    return ok(
+        message,
+        registered=True,
+        status=status_word,
+        can_mark_attendance=found.can_mark_attendance,
+        **identity,
+    )
+
+
 @router.post("/attendance/punch", summary="Record a check-in or check-out")
 async def punch(
     attendance: AttendanceServiceDep,
@@ -329,7 +444,24 @@ async def punch(
         return _punch_message_for_face_error(exc)
 
     if result.decision == AttendanceDecision.Accepted:
-        return ok("Checked in." if type == "check_in" else "Checked out.")
+        # Reports what was RECORDED, not what was asked for. The shift rules can turn a
+        # requested check-out into a check-in - nothing was open, or what was open had been
+        # abandoned - and a kiosk saying "Checked out" over a row that says In would start an
+        # argument the register cannot settle. ``type`` is echoed back for the same reason:
+        # the app tracks its own in/out state and needs to know when the server disagreed.
+        recorded = result.direction or direction
+        checked_in = recorded == AttendanceDirection.In
+        headline = "Checked in." if checked_in else "Checked out."
+
+        return ok(
+            f"{headline} {result.message}" if result.message else headline,
+            type="check_in" if checked_in else "check_out",
+        )
+
+    if result.decision == AttendanceDecision.TooSoon:
+        # The reason carries the actual numbers ("Checked in 35 minutes ago, and a check-out
+        # needs at least 2 hours"), which is what stops the person trying again immediately.
+        return no(result.message or _punch_message_for_decision(result.decision, type))
 
     return no(_punch_message_for_decision(result.decision, type))
 
@@ -356,6 +488,11 @@ def _punch_message_for_decision(decision: AttendanceDecision, kind: str) -> str:
             return "The photo was too dark or blurry. Please try again."
         case AttendanceDecision.ProviderError:
             return "Face service is not responding. Please try again."
+        case AttendanceDecision.TooSoon:
+            # The service wrote the arithmetic into failure_reason - how long they have been
+            # in and how long is required - so the caller passes that through instead of this
+            # fallback. Reached only if the reason is missing.
+            return "It is too soon to check out. You are still checked in."
         case _:
             return NO_MATCH
 

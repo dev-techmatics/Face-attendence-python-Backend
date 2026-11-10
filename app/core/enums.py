@@ -80,6 +80,13 @@ class AttendanceDecision(NamedIntEnum):
     SpoofSuspected = 7
     ProviderError = 8
 
+    #: The face matched, but checking out this soon after checking in is not allowed. Kept
+    #: distinct from Rejected, which means the face did not match: telling somebody their
+    #: face was not recognised when the real answer is "not yet" sends them to re-register
+    #: for no reason, and buries a policy refusal among the recognition failures on the
+    #: Problems screen.
+    TooSoon = 9
+
 
 class FaceTemplateKind(NamedIntEnum):
     #: A numeric vector we can compare ourselves, in-process.

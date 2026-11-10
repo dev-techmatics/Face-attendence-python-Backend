@@ -12,14 +12,19 @@ from __future__ import annotations
 
 import io
 import zlib
+from datetime import timedelta
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
+from sqlalchemy import select
 
 from app.api.rate_limit import reset_rate_limits
 from app.core.config import Settings, reset_settings_cache
+from app.core.enums import PersonStatus
+from app.db.session import get_session_factory
+from app.domain.models import AttendanceEvent, Person
 from app.main import create_app
 
 KIOSK = {"Authorization": "Bearer test-device-key"}
@@ -83,6 +88,68 @@ async def register(client, employee_id="TS4012", name="Alice Example", identity=
         data={"employee_id": employee_id, "full_name": name},
         files=files,
     )
+
+
+async def archive(client, employee_id: str) -> None:
+    """What Remove on the People page does, without going through the dashboard."""
+    factory = get_session_factory()
+
+    async with factory() as session:
+        person = (
+            await session.execute(select(Person).where(Person.external_id == employee_id))
+        ).scalars().one()
+        person.status = PersonStatus.Archived
+        await session.commit()
+
+
+async def shift_punches_back(employee_id: str, hours: float) -> None:
+    """Move somebody's recorded punches into the past.
+
+    The server stamps every punch with its own clock, so two API calls are always in the same
+    second - and the shift-length rules are entirely about the gap between them. Backdating
+    what is already there is the only way to test the gap without a fake clock, and it leaves
+    the rows otherwise exactly as the API wrote them.
+    """
+    factory = get_session_factory()
+
+    async with factory() as session:
+        person = (
+            await session.execute(select(Person).where(Person.external_id == employee_id))
+        ).scalars().one()
+
+        events = (
+            await session.execute(
+                select(AttendanceEvent).where(AttendanceEvent.person_id == person.id)
+            )
+        ).scalars().all()
+
+        for event in events:
+            event.created_at_utc = event.created_at_utc - timedelta(hours=hours)
+
+        await session.commit()
+
+
+async def punch(client, employee_id: str, kind: str, identity: str = "alice"):
+    return await client.post(
+        "/v1/attendance/punch",
+        headers=KIOSK,
+        data={
+            "employee_id": employee_id,
+            "type": kind,
+            "captured_at": "2026-10-30T09:15:00+05:30",
+        },
+        files={"face": upload(f"{identity}-front.jpg")},
+    )
+
+
+async def punch_rows(client, employee_id: str) -> list[dict]:
+    """The recorded attempts, newest last, as the admin API reports them."""
+    body = (
+        await client.get("/api/v1/attendance", headers={"X-Api-Key": "test-admin-key"})
+    ).json()
+
+    rows = [row for row in body["items"] if row.get("external_id") == employee_id]
+    return list(reversed(rows))
 
 
 # ---- the shape the app depends on --------------------------------------------------------
@@ -377,7 +444,13 @@ async def test_a_check_in_is_recorded(client):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"success": True, "message": "Checked in."}
+    # ``type`` echoes what was actually recorded, which is not always what was asked for -
+    # see the shift rules in AttendanceService._decide_shift.
+    assert response.json() == {
+        "success": True,
+        "message": "Checked in.",
+        "type": "check_in",
+    }
 
 
 async def test_the_app_decides_check_out_not_the_server(client):
@@ -394,7 +467,11 @@ async def test_the_app_decides_check_out_not_the_server(client):
         "/v1/attendance/punch", headers=KIOSK, data=body, files={"face": upload("alice-front.jpg")}
     )
 
-    assert response.json() == {"success": True, "message": "Checked out."}
+    assert response.json() == {
+        "success": True,
+        "message": "Checked out.",
+        "type": "check_out",
+    }
 
     register_rows = await client.get(
         "/api/v1/attendance", headers={"X-Api-Key": "test-admin-key"}
@@ -599,3 +676,228 @@ async def test_an_unknown_kiosk_address_gets_a_flat_reply(client):
     assert response.status_code == 404
     assert response.json()["success"] is False
     assert isinstance(response.json()["message"], str)
+
+
+# ---- is this face already registered? ----------------------------------------------------
+# The app asks this on the register screen, before anybody types anything. Its whole value is
+# that it gives the same verdict registration will, so these tests are about agreement with
+# the enrolment guard rather than about recognition.
+
+
+async def test_verify_says_a_new_face_is_not_registered(client):
+    await register(client, employee_id="TS4012", identity="alice")
+
+    response = await client.post(
+        "/v1/faces/verify", headers=KIOSK, files={"face": upload("bob-front.jpg")}
+    )
+
+    body = response.json()
+    assert body["success"] is True
+    assert body["registered"] is False
+
+
+async def test_verify_recognises_somebody_already_on_file(client):
+    await register(client, employee_id="TS4012", name="Alice Example", identity="alice")
+
+    body = (
+        await client.post(
+            "/v1/faces/verify", headers=KIOSK, files={"face": upload("alice-front.jpg")}
+        )
+    ).json()
+
+    assert body["success"] is True
+    assert body["registered"] is True
+    assert body["employee_id"] == "TS4012"
+    assert body["status"] == "active"
+    assert body["can_mark_attendance"] is True
+    # Tells them what to do instead of registering, which is the point of asking early.
+    assert "clock in" in body["message"]
+
+
+async def test_verify_still_finds_a_removed_person_but_withholds_the_name(client):
+    """The case that let somebody hold two identities before it was fixed.
+
+    Archiving takes a person out of attendance matching, so a check that reused the kiosk's
+    candidate set would call their face new. This one must still find them - and must not read
+    a colleague's name out to whoever is standing at the camera.
+    """
+    await register(client, employee_id="TS4012", name="Alice Example", identity="alice")
+    await archive(client, "TS4012")
+
+    body = (
+        await client.post(
+            "/v1/faces/verify", headers=KIOSK, files={"face": upload("alice-front.jpg")}
+        )
+    ).json()
+
+    assert body["registered"] is True
+    assert body["status"] == "removed"
+    assert body["can_mark_attendance"] is False
+    assert "employee_id" not in body
+    assert "name" not in body
+    assert "put that record back" in body["message"]
+
+
+async def test_verify_with_an_employee_id_is_a_one_to_one_check(client):
+    await register(client, employee_id="TS4012", name="Alice Example", identity="alice")
+
+    confirmed = (
+        await client.post(
+            "/v1/faces/verify",
+            headers=KIOSK,
+            data={"employee_id": "TS4012"},
+            files={"face": upload("alice-front.jpg")},
+        )
+    ).json()
+
+    assert confirmed["registered"] is True
+    # The caller already sent the id, so naming the person reveals nothing new.
+    assert confirmed["employee_id"] == "TS4012"
+
+    denied = (
+        await client.post(
+            "/v1/faces/verify",
+            headers=KIOSK,
+            data={"employee_id": "TS4012"},
+            files={"face": upload("bob-front.jpg")},
+        )
+    ).json()
+
+    assert denied["registered"] is False
+
+
+async def test_verify_never_reports_a_failed_check_as_a_clear_face(client):
+    """The distinction the endpoint exists for.
+
+    If a camera or model failure came back as ``registered: false`` the app would offer to
+    register, and the duplicate this is meant to prevent gets created anyway. So a failure is
+    ``success: false`` with no answer at all.
+    """
+    await register(client, employee_id="TS4012", identity="alice")
+
+    body = (
+        await client.post(
+            "/v1/faces/verify",
+            headers=KIOSK,
+            files={"face": ("notes.txt", b"not a photograph", "text/plain")},
+        )
+    ).json()
+
+    assert body["success"] is False
+    assert "registered" not in body
+
+
+async def test_verify_needs_a_key_like_everything_else(client):
+    response = await client.post("/v1/faces/verify", files={"face": upload("alice-front.jpg")})
+
+    assert response.status_code == 401
+
+
+# ---- how long a shift has to be ----------------------------------------------------------
+# Two rules on top of the app's in/out choice: a check-out cannot close a check-in that is
+# less than minimum_shift_minutes old, and a check-in older than open_shift_expiry_hours is
+# abandoned rather than closed. Both are about the gap between punches, which is why these
+# tests backdate what the API recorded instead of calling it twice.
+
+
+async def test_checking_out_too_soon_is_refused(client):
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+
+    # Half an hour in: past the two-minute double-tap window, well short of the two-hour
+    # floor. Inside that window the older guard answers first and says "already recorded a
+    # moment ago", which is the better message for a double tap.
+    await shift_punches_back("TS4012", hours=0.5)
+
+    body = (await punch(client, "TS4012", "check_out")).json()
+
+    assert body["success"] is False
+    # The numbers are in the message on purpose: "too soon" alone invites an immediate retry.
+    assert "2 hours" in body["message"]
+
+
+async def test_a_refused_check_out_leaves_them_checked_in(client):
+    """The refusal must not cost them the shift.
+
+    If a too-early check-out closed the day anyway, or dropped the open check-in, the person
+    would have no way to be paid for the hours they then went on to work.
+    """
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=0.5)
+    await punch(client, "TS4012", "check_out")
+
+    rows = await punch_rows(client, "TS4012")
+
+    assert [row["decision"] for row in rows] == ["Accepted", "TooSoon"]
+    # Only the check-in counts, so they are still inside.
+    assert [row["direction"] for row in rows if row["decision"] == "Accepted"] == ["In"]
+
+
+async def test_checking_out_after_the_minimum_is_allowed(client):
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+
+    # Three hours at work, which clears the two-hour floor.
+    await shift_punches_back("TS4012", hours=3)
+
+    body = (await punch(client, "TS4012", "check_out")).json()
+
+    assert body["success"] is True
+    assert body["type"] == "check_out"
+    assert body["message"] == "Checked out."
+
+
+async def test_a_check_in_left_open_too_long_starts_a_fresh_one(client):
+    """Seventeen hours later, a face at the camera is somebody arriving, not leaving."""
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=17)
+
+    # The app still thinks they are inside, so it asks for a check-out. The server overrules
+    # it - this is the one place it does.
+    body = (await punch(client, "TS4012", "check_out")).json()
+
+    assert body["success"] is True
+    assert body["type"] == "check_in"
+    assert "never closed" in body["message"]
+    # Says what was actually recorded, so the app can correct its own in/out state.
+    assert body["message"].startswith("Checked in.")
+
+
+async def test_the_abandoned_check_in_is_left_unpaired_not_given_an_invented_out(client):
+    """No closing punch is written, deliberately.
+
+    Pairing the stale check-in with an Out at +16h would make the register look tidy and put
+    sixteen hours nobody worked into the month's figures. An unpaired In is already shown as
+    "Punch missing" for a human to judge.
+    """
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=17)
+    await punch(client, "TS4012", "check_out")
+
+    accepted = [row for row in await punch_rows(client, "TS4012") if row["decision"] == "Accepted"]
+
+    assert [row["direction"] for row in accepted] == ["In", "In"]
+
+
+async def test_the_two_hour_floor_applies_to_the_fresh_check_in_too(client):
+    """The abandoned shift must not leave a loophole.
+
+    After the stale check-in is set aside, the new one is a normal check-in - so checking out
+    straight after it is refused like any other, rather than being measured against the
+    sixteen-hour-old punch.
+    """
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=17)
+    await punch(client, "TS4012", "check_out")  # becomes a fresh check-in
+
+    # Half an hour into the NEW shift, not seventeen hours into the abandoned one.
+    await shift_punches_back("TS4012", hours=0.5)
+
+    body = (await punch(client, "TS4012", "check_out")).json()
+
+    assert body["success"] is False
+    assert "2 hours" in body["message"]

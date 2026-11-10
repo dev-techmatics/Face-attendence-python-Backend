@@ -76,7 +76,63 @@ The endpoints, the fields and the wording of every reply are the same as before:
 So the app needs three things only: the address above, the key above, and useMockAPI=false.
 No code changes.
 
-4. The certificate - it does have to be installed
+4. What IS new, and one of them will change a reply you already handle
+---------------------------------------------------------------------
+a) POST /v1/faces/verify    face  (+ optional employee_id)
+
+   "Is this face already registered?" Records nothing. Worth calling on the register screen
+   BEFORE the user fills the form in: it gives the same verdict registration itself will, so
+   nobody types everything and then gets refused at the end.
+
+   Without employee_id it searches everybody, including people whose records were removed.
+   With employee_id it is a 1:1 check against that one person instead.
+
+   The reply has two separate flags, and please do not collapse them:
+
+       success     the check ran
+       registered  the answer
+
+       {{"success": true, "registered": false, "message": "This face is not registered yet."}}
+       {{"success": true, "registered": true, "status": "active",
+        "can_mark_attendance": true, "employee_id": "...", "name": "...",
+        "message": "Already registered as ... Just put your face to the camera to clock in."}}
+
+   On success:false there is NO "registered" field - the check failed and the answer is not
+   known. Please show the message and let them retry rather than offering to register,
+   otherwise a camera or model hiccup creates exactly the duplicate record this prevents.
+
+   When registered is true, read "status": "active" means just clock in, while "removed" or
+   "suspended" means an admin has to restore the record - that person must not be sent round
+   the register screen again, or they end up with two records and their hours split between
+   them. For those, employee_id and name are deliberately absent.
+
+b) Two shift rules on /v1/attendance/punch, which can refuse or redirect a punch
+
+   * A check_out less than 2 hours after the check-in it would close is refused:
+
+         {{"success": false, "message": "Checked in 35 minutes ago, and a check-out needs at
+          least 2 hours. You are still checked in."}}
+
+     They stay checked in, so the shift can still be closed later. Nothing is lost.
+
+   * A check-in left open more than 16 hours is treated as abandoned. The next punch starts
+     a NEW check-in even if the app asked for a check_out - somebody who never checked out
+     yesterday is arriving, not leaving.
+
+   Because of that second rule, a successful punch now tells you what was actually recorded:
+
+       {{"success": true, "type": "check_in", "message": "Checked in. Your last check-in was
+        17 hours ago and was never closed. This is a new check-in."}}
+
+   "type" is "check_in" or "check_out" and is the direction the server stored. It is normally
+   the same as what you sent. Please set the app's own in/out state from it rather than from
+   what the button did, or the app will show "checked out" over a record that says checked
+   in, and the register will disagree with the phone.
+
+   Both limits are configuration, not code - say the word if 2 hours or 16 hours are wrong
+   for how people actually work and we will change the numbers.
+
+5. The certificate - it does have to be installed
 -------------------------------------------------
 An earlier version of this note said the phones already trust it. That was wrong, and you
 were right to correct it. The trust the phones have comes from the Caddy authority used by
@@ -104,7 +160,7 @@ Longer term we can move this service behind Caddy on 443, where the certificate 
 trusted and nothing needs installing on any device. That is a bigger change, because every
 person has to be registered again, so it is a decision rather than a quick fix.
 
-5. If something is refused
+6. If something is refused
 --------------------------
     401 "This device isn't authorised"   wrong key, or you are on port 443. Every key
                                         issued before {rotated} was

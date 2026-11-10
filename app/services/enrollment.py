@@ -26,6 +26,7 @@ from app.services.commands import (
     CreatePersonCommand,
     EnrollmentSummary,
     PoseSimilarity,
+    RegistrationCheck,
 )
 from app.services.validator import FaceCaptureValidator
 from app.storage.base import FaceImageStore
@@ -397,6 +398,113 @@ class EnrollmentService:
                 await self._session.rollback()
 
             raise
+
+    async def find_existing_registration(
+        self,
+        tenant_id: str,
+        image: FaceImage,
+        claimed_external_id: str | None = None,
+        exclude_person_id: int | None = None,
+    ) -> RegistrationCheck:
+        """Is this face already on file? Records nothing and changes nothing.
+
+        Asked by a kiosk *before* somebody fills in a registration form, so the answer must
+        agree with what registration itself will decide. That is why this uses the same
+        population and the same threshold as :meth:`_guard_against_duplicate_identity`:
+
+        * **everybody**, archived and suspended included, because a removed person is still
+          on file and registering them again would split their history across two records;
+        * ``duplicate_enrollment_threshold`` (0.60), not the lower identification threshold
+          used for clocking in.
+
+        A looser check here would be worse than none: it would clear somebody, let them type
+        their details, and then have registration refuse - which reads as a broken form.
+
+        Pass ``claimed_external_id`` to ask the narrower question instead: *is this face the
+        person with this id?* That is a 1:1 verification against one person's templates at
+        ``verification_threshold``, and it is the one to use for "confirm it is really you"
+        rather than "who is this".
+
+        Raises :class:`FaceProcessingException` when the frame cannot be used at all. It must
+        never come back as ``registered=False``, because a caller that cannot tell those apart
+        will happily create the duplicate this exists to stop.
+        """
+        self._validator.validate_upload(image)
+
+        if claimed_external_id is not None:
+            claimed = await self._people.get_by_external_id(
+                tenant_id, claimed_external_id.strip(), False
+            )
+
+            if claimed is None:
+                return RegistrationCheck(
+                    registered=False,
+                    score=0.0,
+                    threshold=self._settings.verification_threshold,
+                    one_to_one=True,
+                )
+
+            candidates = await self._templates.get_candidates_for_person(
+                claimed.id, self._provider.provider_id
+            )
+            threshold = self._settings.verification_threshold
+        else:
+            candidates = await self._templates.get_candidates(
+                tenant_id,
+                self._provider.provider_id,
+                exclude_person_id=exclude_person_id,
+                include_inactive=True,
+            )
+            threshold = self._settings.duplicate_enrollment_threshold
+            claimed = None
+
+        if not candidates:
+            return RegistrationCheck(
+                registered=False,
+                score=0.0,
+                threshold=threshold,
+                one_to_one=claimed is not None,
+            )
+
+        match = await self._provider.match(
+            image, candidates, threshold, self._settings.top_n
+        )
+
+        # No margin rule on purpose, unlike clocking in. A near-tie between two people both
+        # scoring above 0.60 is not an ambiguity to refuse - it means the face is on file
+        # twice already, and answering "not registered" would be the one wrong answer.
+        if not match.is_match or match.person_id is None:
+            return RegistrationCheck(
+                registered=False,
+                score=match.score,
+                threshold=threshold,
+                one_to_one=claimed is not None,
+            )
+
+        person = claimed or await self._people.get_by_id(match.person_id, False)
+
+        if person is None or person.tenant_id != tenant_id:
+            # The template outlived its person, or belongs to another tenant. Either way this
+            # caller is not entitled to a name, and "on file" would be misleading.
+            return RegistrationCheck(
+                registered=False,
+                score=match.score,
+                threshold=threshold,
+                one_to_one=claimed is not None,
+            )
+
+        return RegistrationCheck(
+            registered=True,
+            score=match.score,
+            threshold=threshold,
+            one_to_one=claimed is not None,
+            person_id=person.id,
+            external_id=person.external_id,
+            full_name=person.full_name,
+            status=PersonStatus(person.status),
+            enrollment_status=EnrollmentStatus(person.enrollment_status),
+            can_mark_attendance=bool(person.can_mark_attendance),
+        )
 
     # ---- internals -----------------------------------------------------------------------
 

@@ -91,6 +91,35 @@ class EnrollmentSummary:
 
 
 @dataclass(frozen=True)
+class RegistrationCheck:
+    """Answer to "is this face already on file?", asked before anybody fills in a form.
+
+    ``registered`` is the answer; the dataclass existing at all is the point. A caller must
+    be able to tell "we checked, and no" from "we could not check", because treating a
+    failed check as a clear face is how a second record for the same person gets created -
+    which is the thing the check exists to prevent. A failure therefore raises rather than
+    returning ``registered=False``.
+
+    ``status`` and ``can_mark_attendance`` are here because "already registered" has two
+    very different endings: an active colleague should just clock in, while somebody whose
+    record was removed needs an admin to put it back and must not be told to register again.
+    """
+
+    registered: bool
+    score: float
+    threshold: float
+    #: True when the match came from comparing against one claimed person rather than
+    #: searching everybody. The two use different thresholds, so this says which was applied.
+    one_to_one: bool = False
+    person_id: int | None = None
+    external_id: str | None = None
+    full_name: str | None = None
+    status: PersonStatus | None = None
+    enrollment_status: EnrollmentStatus | None = None
+    can_mark_attendance: bool = False
+
+
+@dataclass(frozen=True)
 class MarkAttendanceCommand:
     tenant_id: str
     image: FaceImage
