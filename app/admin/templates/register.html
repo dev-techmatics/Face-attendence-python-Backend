@@ -44,12 +44,13 @@
         <td>{{ d.worked.first_in | clock }}</td>
         <td>
           {%- if d.worked.missed_out %}<span class="tag t-bad">Missed</span>
+          {%- elif d.worked.open_now %}&mdash;
           {%- elif d.worked.last_out %}{{ d.worked.last_out | clock }}
           {%- else %}&mdash;{% endif %}
         </td>
         <td>{% if d.worked.missed_out %}&mdash;{% else %}{{ d.worked.hours | hours }}{% endif %}</td>
         <td>
-          {% if d.worked.open_now %}<span class="tag t-in">Still in</span>
+          {% if d.worked.open_now %}<span class="tag t-in">In since {{ d.worked.open_since | clock }}</span>
           {% elif d.worked.unpaired %}<span class="tag t-bad">Check this day</span>{% endif %}
         </td>
       </tr>
@@ -62,10 +63,14 @@
 </div>
 
 <p class="note">Hours are the time between each in and the out that followed it, so a lunch
-  break punched out and back in is not counted as time at work. &ldquo;Punch missing&rdquo;
-  means somebody forgot one half &mdash; the hours for that day are what could be paired, not
-  a guess. Failed attempts are not here at all, because a failure has no other half to pair
-  with; they are on the <a href="/admin/register?{{ query_string }}">Every attempt</a> tab.</p>
+  break punched out and back in is not counted as time at work.
+  <strong>Missed</strong> means they checked in and never checked out, and it is now too late
+  for one to arrive; no hours are shown for those days and no leaving time is invented, so
+  somebody has to decide what should have been recorded. While a person is still inside, the
+  out column stays empty even if they went out and came back earlier &mdash; the tag says
+  when they last came in. Failed attempts are not here at all, because a failure has no other
+  half to pair with; they are on the
+  <a href="/admin/register?{{ query_string }}">Every attempt</a> tab.</p>
 
 {% else %}
 <div class="panel">

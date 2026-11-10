@@ -486,6 +486,11 @@ class WorkedDay:
     #: Still inside the building as far as the system knows: checked in, no check-out yet,
     #: and recently enough that one could still arrive.
     open_now: bool
+    #: When the check-out-less check-in happened, for ``open_now`` and ``missed_out`` days.
+    #: Not the same as ``first_in`` once somebody has been out and back: Mighty Mike came in
+    #: at 15:24, left at 15:46 and returned at 16:45, so his row showed a leaving time beside
+    #: "Still in" and read as a contradiction. This is the time that explains it.
+    open_since: datetime | None
     #: Checked in and never checked out, long enough ago that the check-out is not coming.
     #: The same cutoff the server uses to abandon a stale shift, so a day reads as "missed"
     #: here at exactly the moment a new punch would start a fresh check-in rather than close
@@ -570,6 +575,7 @@ def _pair_into_days(
             unpaired=entry["unpaired"],
             open_now=still_open(entry),
             missed_out=entry["open"] is not None and not still_open(entry),
+            open_since=entry["open"],
         )
         for day, entry in sorted(by_day.items(), reverse=True)
     ]

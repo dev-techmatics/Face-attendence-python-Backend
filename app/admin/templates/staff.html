@@ -54,7 +54,7 @@
         <td>{{ d.day | day }}{% if d.day == today %} <span class="tag t-in">today</span>{% endif %}</td>
         <td>{{ d.first_in | clock }}</td>
         <td>
-          {% if d.open_now %}<span class="muted">still in</span>
+          {% if d.open_now %}<span class="muted">in since {{ d.open_since | clock }}</span>
           {% elif d.missed_out %}<span class="tag t-bad" title="Checked in, never checked out">missed</span>
           {% else %}{{ d.last_out | clock }}{% endif %}
         </td>

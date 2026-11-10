@@ -1095,7 +1095,9 @@ async def test_a_missing_punch_is_flagged_not_guessed(client):
     page = await client.get("/admin/register?view=days")
 
     # Still in the building as far as the system knows, so no invented leaving time.
-    assert "Still in" in page.text
+    # The tag carries the time they came in, which is what tells a contradictory-looking
+    # row apart from a real one - see the open_since tests below.
+    assert "In since" in page.text
 
 
 async def test_failures_are_left_out_of_the_day_view_but_stay_in_the_log(client):
@@ -1381,7 +1383,7 @@ async def test_a_day_with_no_check_out_reads_as_missed_once_it_is_too_late(clien
 
     # The badge in the Out column, not the "Missed check-outs" summary card above it.
     assert 't-bad">Missed<' in page.text
-    assert "Still in" not in page.text
+    assert "In since" not in page.text
 
     factory = get_session_factory()
 
@@ -1406,7 +1408,7 @@ async def test_a_check_in_from_an_hour_ago_still_reads_as_still_in(client):
 
     page = await client.get("/admin/people/TS4012")
 
-    assert "Still in" in page.text
+    assert "In since" in page.text
     assert 't-bad">Missed<' not in page.text
 
 
@@ -1464,3 +1466,40 @@ async def test_the_person_page_no_longer_totals_hours(client):
     assert "Hours in total" not in page.text
     assert "Days present" in page.text
     assert "Missed check-outs" in page.text
+
+
+async def test_a_day_they_came_back_to_shows_no_leaving_time(client):
+    """The contradiction the user spotted.
+
+    Mighty Mike came in at 15:24, went out at 15:46 and came back at 16:45. The row printed
+    "15:46" in the Out column next to "Still in", which reads as a flat contradiction - and
+    15:46 is not when he left for the day, because he has not left.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    base = datetime.now(timezone.utc) - timedelta(hours=3)
+    await backdate("TS4012", [(base, base + timedelta(minutes=22))])
+    await backdate_in_only("TS4012", [base + timedelta(minutes=81)])
+
+    page = await client.get("/admin/people/TS4012")
+
+    back_in = (base + timedelta(minutes=81)).astimezone().strftime("%H:%M")
+    left_at = (base + timedelta(minutes=22)).astimezone().strftime("%H:%M")
+
+    assert f"In since {back_in}" in page.text
+    # The earlier exit must not be sitting in the Out column while they are inside.
+    assert f">{left_at}<" not in page.text
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        history = await queries.person_history(
+            session, "default", "TS4012", expiry_hours=16
+        )
+
+    day = history.days[0]
+    assert day.open_now is True
+    assert day.open_since.astimezone().strftime("%H:%M") == back_in
+    # The completed pair still counts: he really did work those 22 minutes.
+    assert day.hours == 0.37
