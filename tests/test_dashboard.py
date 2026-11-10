@@ -1414,3 +1414,53 @@ async def test_a_person_who_is_not_there_is_a_404(client):
     await signed_in_hr(client)
 
     assert (await client.get("/admin/people/NOBODY")).status_code == 404
+
+
+async def test_a_missed_day_shows_no_hours_but_keeps_them_in_the_record(client):
+    """Asked for by the user: a figure beside "Missed" reads as the day's answer.
+
+    The paired part of such a day is a real number - somebody genuinely was at work for it -
+    so it stays in the data and in the monthly totals. It is only kept off the row, where it
+    would be mistaken for a finished day and paid against.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    # A completed three-minute pair, then a check-in two days ago that never closed: exactly
+    # Mighty Mike's 30 October.
+    came = datetime.now(timezone.utc) - timedelta(days=2)
+    await backdate("TS4012", [(came, came + timedelta(minutes=3))])
+    await backdate_in_only("TS4012", [came + timedelta(minutes=7)])
+
+    page = await client.get("/admin/people/TS4012")
+    rows = page.text
+
+    assert 't-bad">Missed<' in rows
+    # The paired three minutes must not appear on the row beside "Missed".
+    assert "3m" not in rows
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        history = await queries.person_history(
+            session, "default", "TS4012", expiry_hours=16
+        )
+
+    # Still in the record, so nothing is lost to payroll.
+    assert history.days[0].missed_out is True
+    assert history.days[0].hours == 0.05
+    assert history.total_hours == 0.05
+
+
+async def test_the_person_page_no_longer_totals_hours(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    came = datetime.now(timezone.utc).replace(hour=3, minute=0) - timedelta(days=1)
+    await backdate("TS4012", [(came, came + timedelta(hours=8))])
+
+    page = await client.get("/admin/people/TS4012")
+
+    assert "Hours in total" not in page.text
+    assert "Days present" in page.text
+    assert "Missed check-outs" in page.text

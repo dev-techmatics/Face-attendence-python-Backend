@@ -7,7 +7,6 @@
 
 <div class="cards">
   <div class="card"><div class="n">{{ history.days_present }}</div><div class="l">Days present</div></div>
-  <div class="card"><div class="n">{{ history.total_hours | hours }}</div><div class="l">Hours in total</div></div>
   <div class="card"><div class="n">{{ history.missed_outs }}</div><div class="l">Missed check-outs</div></div>
 </div>
 
@@ -45,7 +44,10 @@
           {%- elif d.last_out %}{{ d.last_out | clock }}
           {%- else %}&mdash;{% endif %}
         </td>
-        <td>{{ d.hours | hours }}</td>
+        {#- No figure on a day whose check-out never came. The paired part of it is a real
+            number, but printed beside "Missed" it reads as the day's answer when it is only
+            part of one, and somebody would pay against it. #}
+        <td>{% if d.missed_out %}&mdash;{% else %}{{ d.hours | hours }}{% endif %}</td>
         <td>
           {% if d.open_now %}<span class="tag t-in">Still in</span>
           {% elif d.unpaired %}<span class="tag t-bad">Check this day</span>{% endif %}
@@ -60,13 +62,13 @@
 </div>
 
 <p class="note"><strong>Missed</strong> means they checked in and never checked out, and it is
-  now too late for one to arrive &mdash; after
-  {{ expiry_hours }} hours the next time they show their face it starts a new check-in rather
-  than closing this day. No leaving time is invented for those days, so they count no hours;
-  somebody has to decide what should have been recorded.</p>
+  now too late for one to arrive &mdash; after {{ expiry_hours }} hours the next time they
+  show their face it starts a new check-in rather than closing this day. No hours are shown
+  for those days and no leaving time is invented: somebody has to decide what should have
+  been recorded. If they did complete an earlier in-and-out that day, that time is not lost
+  &mdash; it is still counted in the monthly figures, it is just not a finished day.</p>
 
 <p class="note">Hours pair each in with the out that followed it, so a break punched out and
-  back in is not counted as time at work. Every punch on record is included. The attempts
-  behind these figures, failures included, are on
-  <a href="/admin/register?q={{ p.external_id }}">Attendance</a>.</p>
+  back in is not counted as time at work. The attempts behind these figures, failures
+  included, are on <a href="/admin/register?q={{ p.external_id }}">Attendance</a>.</p>
 {% endblock %}

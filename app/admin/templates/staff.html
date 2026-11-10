@@ -59,7 +59,7 @@
           {% else %}{{ d.last_out | clock }}{% endif %}
         </td>
         <td>
-          {{ d.hours | hours }}
+          {% if d.missed_out %}&mdash;{% else %}{{ d.hours | hours }}{% endif %}
           {% if d.unpaired %}<span class="tag t-bad" title="A punch with no matching other half">check</span>{% endif %}
         </td>
       </tr>

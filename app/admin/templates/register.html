@@ -47,7 +47,7 @@
           {%- elif d.worked.last_out %}{{ d.worked.last_out | clock }}
           {%- else %}&mdash;{% endif %}
         </td>
-        <td>{{ d.worked.hours | hours }}</td>
+        <td>{% if d.worked.missed_out %}&mdash;{% else %}{{ d.worked.hours | hours }}{% endif %}</td>
         <td>
           {% if d.worked.open_now %}<span class="tag t-in">Still in</span>
           {% elif d.worked.unpaired %}<span class="tag t-bad">Check this day</span>{% endif %}
