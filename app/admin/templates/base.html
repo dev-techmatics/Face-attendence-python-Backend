@@ -50,6 +50,11 @@
   .t-in { background: var(--in-bg); color: var(--in); }
   .t-out { background: var(--out-bg); color: var(--out); }
   .t-bad { background: var(--bad-bg); color: var(--bad); }
+  /* "+1" beside a check-out that landed on a later date - a night shift. Small and raised
+     rather than a tag: it qualifies the time it sits next to, it is not a status of its
+     own, and on a page of day shifts it should be invisible until it matters. */
+  .next-day { font-size: 10px; vertical-align: super; color: var(--muted); margin-left: 2px;
+              cursor: help; }
   /* The "why" column on a person's history: present for failures, empty for most rows, so
      it must not shout. Wrapped rather than truncated - a refusal reason is the one thing
      somebody querying their hours needs to read in full. */

@@ -52,15 +52,17 @@
     {% for d in me.days %}
       <tr>
         <td>{{ d.day | day }}{% if d.day == today %} <span class="tag t-in">today</span>{% endif %}</td>
-        <td>{{ d.first_in | clock }}</td>
+        <td>{% if d.started %}{{ d.started | clock }}{% else %}&mdash;{% endif %}</td>
         <td>
-          {% if d.open_now %}<span class="muted">in since {{ d.open_since | clock }}</span>
+          {% if d.open_now %}<span class="muted">still in</span>
           {% elif d.missed_out %}<span class="tag t-bad" title="Checked in, never checked out">missed</span>
-          {% else %}{{ d.last_out | clock }}{% endif %}
+          {% elif d.ended %}{{ d.ended | clock }}{% if d.ends_next_day %}<span
+              class="next-day" title="{{ d.ended | stamp }}">+{{ d.nights }}</span>{% endif %}
+          {% else %}&mdash;{% endif %}
         </td>
         <td>
           {% if d.missed_out %}&mdash;{% else %}{{ d.hours | hours }}{% endif %}
-          {% if d.unpaired %}<span class="tag t-bad" title="A punch with no matching other half">check</span>{% endif %}
+          {% if d.orphan_out %}<span class="tag t-bad" title="A check-out with no check-in">check</span>{% endif %}
         </td>
       </tr>
     {% endfor %}

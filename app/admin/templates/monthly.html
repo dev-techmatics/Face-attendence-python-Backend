@@ -15,17 +15,13 @@
   <h2>Per person</h2>
   {% if rows %}
   <table>
-    <thead><tr><th>Name</th><th>ID</th><th>Days present</th><th>Hours</th><th>First in</th><th>Last out</th><th>Unpaired</th></tr></thead>
+    <thead><tr><th>Name</th><th>ID</th><th>Days present</th></tr></thead>
     <tbody>
     {% for r in rows %}
       <tr>
-        <td>{{ r.name }}</td>
+        <td><a href="/admin/people/{{ r.external_id }}">{{ r.name }}</a></td>
         <td>{{ r.external_id }}</td>
         <td>{{ r.days }}</td>
-        <td>{{ '%.1f' % r.hours }}</td>
-        <td>{{ r.first | stamp }}</td>
-        <td>{{ r.last | stamp }}</td>
-        <td>{% if r.unpaired %}<span class="tag t-bad">{{ r.unpaired }}</span>{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -35,8 +31,12 @@
   {% endif %}
 </div>
 
-<p class="note">Hours are added up from matching in/out pairs, so a lunch break that was
-  punched out and back in is not counted as time at work.
-  &ldquo;Unpaired&rdquo; counts punches with no matching other half &mdash; usually somebody
-  forgetting to punch out. Check those before using these totals for pay.</p>
+<p class="note">How many dates each person checked in on this month. A night shift that
+  starts before midnight and ends after it counts once, against the date it started, because
+  check-ins and check-outs are paired on the clock and never on the calendar.</p>
+
+<p class="note">Click a name for that person's check-in and check-out times, or use
+  <strong>Download for Excel</strong>, which still carries the hours, the first check-in, the
+  last check-out and the count of punches with no matching other half &mdash; the detail
+  payroll needs, kept out of the way of the headcount this screen is for.</p>
 {% endblock %}

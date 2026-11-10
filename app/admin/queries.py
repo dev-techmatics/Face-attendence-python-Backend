@@ -335,12 +335,19 @@ async def busiest_hours(
 
 
 async def monthly_totals(
-    session: AsyncSession, tenant: str, window: DayWindow
+    session: AsyncSession, tenant: str, window: DayWindow, expiry_hours: float | None = None
 ) -> list[tuple]:
-    """Per person: days present, first in, last out, and total hours.
+    """Per person: days present, first check-in, last check-out, total hours, unpaired.
 
-    Hours are computed from the paired In/Out punches rather than from first-to-last, so a
-    lunch break that was punched out and back in is not counted as time at work.
+    Built on :func:`_pair_into_sessions`, the same pairing every other screen uses. It used
+    to carry its own copy of the arithmetic, and the two drifted: on a 22:00-06:00 shift this
+    page said eight hours while the day views said nought, and its "last out" column was the
+    latest punch of ANY direction, so somebody who never checked out had their check-in
+    printed under it.
+
+    ``first`` and ``last`` are now a real first check-in and a real last check-out. ``last``
+    is ``None`` when the final session is still open or was never closed, because there is no
+    leaving time to report and inventing one is what the old column effectively did.
     """
     rows = (
         await session.execute(
@@ -362,58 +369,42 @@ async def monthly_totals(
         )
     ).all()
 
-    people: dict[str, dict] = {}
+    by_person: dict[str, dict] = {}
 
     for external_id, name, department, when, direction in rows:
-        local = when.astimezone()
-        entry = people.setdefault(
+        entry = by_person.setdefault(
             external_id,
-            {
-                "name": name,
-                "department": department,
-                "days": set(),
-                "seconds": 0.0,
-                "open_in": None,
-                "first": local,
-                "last": local,
-                "unpaired": 0,
-            },
+            {"name": name, "department": department, "events": []},
+        )
+        entry["events"].append((when, direction))
+
+    totals = []
+
+    for external_id, entry in by_person.items():
+        sessions = _pair_into_sessions(entry["events"], expiry_hours)
+
+        starts = [s.started for s in sessions if s.started is not None]
+        ends = [s.ended for s in sessions if s.ended is not None]
+
+        # Unpaired: a check-in that never got its check-out, plus a check-out that never had
+        # a check-in. Both are somebody's missing punch and both need a human.
+        unpaired = sum(1 for s in sessions if s.missed_out or s.open_now or s.orphan_out)
+
+        totals.append(
+            (
+                external_id,
+                entry["name"],
+                entry["department"],
+                len({s.day for s in sessions if not s.orphan_out}),
+                min(starts) if starts else None,
+                max(ends) if ends else None,
+                round(sum(s.hours for s in sessions), 1),
+                unpaired,
+            )
         )
 
-        entry["days"].add(local.date())
-        entry["first"] = min(entry["first"], local)
-        entry["last"] = max(entry["last"], local)
-
-        if AttendanceDirection(direction) == AttendanceDirection.In:
-            if entry["open_in"] is not None:
-                # Two Ins in a row: somebody forgot to punch out. Counted, not guessed at.
-                entry["unpaired"] += 1
-            entry["open_in"] = local
-        else:
-            if entry["open_in"] is None:
-                entry["unpaired"] += 1
-            else:
-                entry["seconds"] += (local - entry["open_in"]).total_seconds()
-                entry["open_in"] = None
-
-    # Anyone still "in" at the end of the period has an unclosed shift.
-    for entry in people.values():
-        if entry["open_in"] is not None:
-            entry["unpaired"] += 1
-
-    return [
-        (
-            external_id,
-            entry["name"],
-            entry["department"],
-            len(entry["days"]),
-            entry["first"],
-            entry["last"],
-            round(entry["seconds"] / 3600.0, 1),
-            entry["unpaired"],
-        )
-        for external_id, entry in sorted(people.items(), key=lambda kv: kv[1]["name"])
-    ]
+    totals.sort(key=lambda row: row[1])
+    return totals
 
 
 async def headline_counts(session: AsyncSession, tenant: str, window: DayWindow) -> dict:
@@ -476,26 +467,132 @@ async def headline_counts(session: AsyncSession, tenant: str, window: DayWindow)
 
 
 @dataclass(frozen=True)
-class WorkedDay:
-    day: date
-    first_in: datetime | None
-    last_out: datetime | None
+class WorkSession:
+    """One check-in and the check-out that closed it. The unit everything is counted in.
+
+    Keyed on the clock, never on the calendar. The previous model bucketed punches by local
+    date first and paired them inside each bucket, which meant a check-in could not find a
+    check-out on the other side of midnight: a 22:00-06:00 shift came out as two broken rows
+    worth **nothing**, while the monthly page - which paired across the whole month - said
+    eight hours. Both screens, one night, two different answers.
+
+    So a session simply runs from an In to the Out that follows it, however long and across
+    however many midnights. ``day`` is the date of the check-in, which is the day the person
+    came to work and the date they would name if asked. It is for reading and grouping, and
+    never takes part in the arithmetic: hours are ``ended - started`` and nothing else.
+    """
+
+    #: Local time. ``None`` only for an orphan check-out - see ``orphan_out``.
+    started: datetime | None
+    #: Local time. ``None`` while they are still inside, or when the check-out never came.
+    ended: datetime | None
     hours: float
-    #: A punch with no matching other half - usually somebody forgetting to punch out.
-    unpaired: bool
-    #: Still inside the building as far as the system knows: checked in, no check-out yet,
-    #: and recently enough that one could still arrive.
+    #: Checked in, no check-out yet, and recent enough that one could still arrive.
     open_now: bool
-    #: When the check-out-less check-in happened, for ``open_now`` and ``missed_out`` days.
-    #: Not the same as ``first_in`` once somebody has been out and back: Mighty Mike came in
-    #: at 15:24, left at 15:46 and returned at 16:45, so his row showed a leaving time beside
-    #: "Still in" and read as a contradiction. This is the time that explains it.
-    open_since: datetime | None
-    #: Checked in and never checked out, long enough ago that the check-out is not coming.
-    #: The same cutoff the server uses to abandon a stale shift, so a day reads as "missed"
-    #: here at exactly the moment a new punch would start a fresh check-in rather than close
-    #: this one. Without it an unclosed day from three weeks ago still said "Still in".
+    #: Checked in and never checked out, past the point where a check-out is coming. The same
+    #: cutoff the server uses to abandon a stale shift, so this turns true at exactly the
+    #: moment the next punch would start a fresh check-in rather than close this one.
     missed_out: bool
+    #: A check-out with no check-in before it. Cannot be paired and is worth no hours, but it
+    #: is shown rather than dropped: a punch that silently disappears is how somebody loses
+    #: faith in the whole register.
+    orphan_out: bool = False
+
+    @property
+    def day(self) -> date:
+        """The date the person marked attendance - the check-in's date."""
+        anchor = self.started or self.ended
+        return anchor.date()
+
+    @property
+    def ends_next_day(self) -> bool:
+        """True when the check-out landed on a later date than the check-in."""
+        return (
+            self.started is not None
+            and self.ended is not None
+            and self.ended.date() != self.started.date()
+        )
+
+    @property
+    def nights(self) -> int:
+        """How many midnights the session crossed. 1 for a normal night shift."""
+        if not self.ends_next_day:
+            return 0
+        return (self.ended.date() - self.started.date()).days
+
+
+def _pair_into_sessions(
+    events: list[tuple[datetime, int]], expiry_hours: float | None = None
+) -> list[WorkSession]:
+    """Turn a time-ordered stream of In/Out punches into sessions, newest first.
+
+    ``events`` must be **ascending**: an Out is paired with the In before it, so handed the
+    rows newest-first this pairs nothing.
+
+    A second In while one is already open closes nothing - the first becomes a session with
+    no end, judged by ``expiry_hours`` like any other. ``expiry_hours`` of ``None`` means no
+    session is ever called missed, only open.
+    """
+    now = datetime.now().astimezone()
+    sessions: list[WorkSession] = []
+    open_at: datetime | None = None
+
+    def close(started: datetime, ended: datetime | None) -> None:
+        if ended is not None:
+            sessions.append(
+                WorkSession(
+                    started=started,
+                    ended=ended,
+                    hours=round((ended - started).total_seconds() / 3600.0, 2),
+                    open_now=False,
+                    missed_out=False,
+                )
+            )
+            return
+
+        # Still open. Whether that means "at work" or "forgot to leave" is the only thing
+        # the clock is asked here, and it is the same question the server asks before it
+        # abandons a shift.
+        stale = expiry_hours is not None and (now - started) >= timedelta(hours=expiry_hours)
+        sessions.append(
+            WorkSession(
+                started=started,
+                ended=None,
+                hours=0.0,
+                open_now=not stale,
+                missed_out=stale,
+            )
+        )
+
+    for when, direction in events:
+        local = when.astimezone()
+
+        if AttendanceDirection(direction) == AttendanceDirection.In:
+            if open_at is not None:
+                # Two check-ins with no check-out between them: the first never ended.
+                close(open_at, None)
+            open_at = local
+        elif open_at is None:
+            sessions.append(
+                WorkSession(
+                    started=None,
+                    ended=local,
+                    hours=0.0,
+                    open_now=False,
+                    missed_out=False,
+                    orphan_out=True,
+                )
+            )
+        else:
+            close(open_at, local)
+            open_at = None
+
+    if open_at is not None:
+        close(open_at, None)
+
+    # Newest first, which is how every screen reads them.
+    sessions.sort(key=lambda s: s.started or s.ended, reverse=True)
+    return sessions
 
 
 @dataclass(frozen=True)
@@ -505,7 +602,7 @@ class MyAttendance:
     department: str | None
     state: str | None
     since: datetime | None
-    days: list[WorkedDay]
+    days: list[WorkSession]
     week_hours: float
     week_days: int
     month_hours: float
@@ -513,72 +610,6 @@ class MyAttendance:
     late_days: int
     #: Days in the period with no punch at all, excluding weekends and today.
     absent_days: int
-
-
-def _pair_into_days(
-    events: list[tuple[datetime, int]], expiry_hours: float | None = None
-) -> list[WorkedDay]:
-    """Turn a stream of In/Out punches into one row per local day, with hours.
-
-    Pairs an Out with the preceding In rather than measuring first-to-last, so a lunch break
-    that was punched out and back in is not counted as time at work. An unmatched punch is
-    reported rather than guessed at: inventing an end time would quietly inflate somebody's
-    pay.
-
-    ``expiry_hours`` is ``FA_FACE__OPEN_SHIFT_EXPIRY_HOURS`` - how long the server lets a
-    check-in stay open before the next punch starts a fresh one instead of closing it. Past
-    that, a day with no check-out is reported as ``missed_out`` rather than as somebody who
-    is still inside. Leave it ``None`` and no day is ever called missed, which is the old
-    behaviour: every unclosed day reads as open, however long ago it was.
-    """
-    by_day: dict[date, dict] = {}
-
-    for when, direction in events:
-        local = when.astimezone()
-        entry = by_day.setdefault(
-            local.date(),
-            {"first_in": None, "last_out": None, "seconds": 0.0, "open": None, "unpaired": False},
-        )
-
-        if AttendanceDirection(direction) == AttendanceDirection.In:
-            if entry["first_in"] is None:
-                entry["first_in"] = local
-            if entry["open"] is not None:
-                entry["unpaired"] = True
-            entry["open"] = local
-        else:
-            entry["last_out"] = local
-            if entry["open"] is None:
-                entry["unpaired"] = True
-            else:
-                entry["seconds"] += (local - entry["open"]).total_seconds()
-                entry["open"] = None
-
-    now = datetime.now().astimezone()
-
-    def still_open(entry: dict) -> bool:
-        """Open, and a check-out could still plausibly arrive."""
-        if entry["open"] is None:
-            return False
-
-        if expiry_hours is None:
-            return True
-
-        return (now - entry["open"]) < timedelta(hours=expiry_hours)
-
-    return [
-        WorkedDay(
-            day=day,
-            first_in=entry["first_in"],
-            last_out=entry["last_out"],
-            hours=round(entry["seconds"] / 3600.0, 2),
-            unpaired=entry["unpaired"],
-            open_now=still_open(entry),
-            missed_out=entry["open"] is not None and not still_open(entry),
-            open_since=entry["open"],
-        )
-        for day, entry in sorted(by_day.items(), reverse=True)
-    ]
 
 
 async def my_attendance(
@@ -628,20 +659,37 @@ async def my_attendance(
         ).all()
     ]
 
-    worked = _pair_into_days(events, expiry_hours)
-    by_day = {d.day: d for d in worked}
+    worked = _pair_into_sessions(events, expiry_hours)
+
+    # A date can hold several sessions now - a lunch break makes two - so the day-shaped
+    # questions below (how many days, was I late, was I absent) group them rather than
+    # assuming one each.
+    dates_worked = {s.day for s in worked if not s.orphan_out}
 
     def total(frm: date) -> tuple[float, int]:
-        days = [d for d in worked if d.day >= frm]
-        return round(sum(d.hours for d in days), 1), len(days)
+        chosen = [s for s in worked if s.day >= frm]
+        return (
+            round(sum(s.hours for s in chosen), 1),
+            len({s.day for s in chosen if not s.orphan_out}),
+        )
 
     week_hours, week_days = total(week_start)
     month_hours, month_days = total(month_start)
 
+    # Late is judged on the FIRST check-in of a date, not on every session: coming back from
+    # lunch at 14:00 is not turning up late.
+    first_in_on: dict[date, datetime] = {}
+
+    for s in worked:
+        if s.started is None:
+            continue
+        if s.day not in first_in_on or s.started < first_in_on[s.day]:
+            first_in_on[s.day] = s.started
+
     late = sum(
         1
-        for d in worked
-        if d.day >= month_start and d.first_in is not None and d.first_in.time() > late_after
+        for day, started in first_in_on.items()
+        if day >= month_start and started.time() > late_after
     )
 
     # Absent: a weekday in the month, before today, with nothing recorded. Today is excluded
@@ -649,17 +697,19 @@ async def my_attendance(
     absent = 0
     cursor = month_start
     while cursor < today:
-        if cursor.weekday() < 5 and cursor not in by_day:
+        if cursor.weekday() < 5 and cursor not in dates_worked:
             absent += 1
         cursor += timedelta(days=1)
 
-    todays = by_day.get(today)
+    # The state is the latest session that started today, which is the one they are in or
+    # the one they last finished.
+    todays = next((s for s in worked if s.day == today and not s.orphan_out), None)
     state = None
     since = None
 
     if todays is not None:
         state = "In" if todays.open_now else "Out"
-        since = todays.first_in if todays.open_now else todays.last_out
+        since = todays.started if todays.open_now else todays.ended
 
     return MyAttendance(
         external_id=person[0],
@@ -667,7 +717,7 @@ async def my_attendance(
         department=person[2],
         state=state,
         since=since,
-        days=[d for d in worked if d.day > today - timedelta(days=history_days + 1)],
+        days=[s for s in worked if s.day > today - timedelta(days=history_days + 1)],
         week_hours=week_hours,
         week_days=week_days,
         month_hours=month_hours,
@@ -815,7 +865,7 @@ class PersonDay:
 
     external_id: str
     full_name: str
-    worked: WorkedDay
+    worked: WorkSession
 
 
 async def worked_days(
@@ -830,7 +880,7 @@ async def worked_days(
     The same punches the log shows, paired up. Only accepted ones: a failed attempt has no
     other half to pair with and would silently become an arrival that never happened.
 
-    Pairing is :func:`_pair_into_days`, the same code behind the monthly figures and the
+    Pairing is :func:`_pair_into_sessions`, the same code behind the monthly figures and the
     staff page, so an hour counted here is the hour counted everywhere else.
     """
     filters = [
@@ -866,10 +916,10 @@ async def worked_days(
     days = [
         PersonDay(external_id=external_id, full_name=full_name, worked=worked)
         for (external_id, full_name), events in by_person.items()
-        for worked in _pair_into_days(events, expiry_hours)
+        for worked in _pair_into_sessions(events, expiry_hours)
     ]
 
-    # Newest day first, and within a day by name - so reverse the day only. Sorting the
+    # Newest first, and within one date by name - so reverse the date only. Sorting the
     # tuple would run the names backwards too.
     days.sort(key=lambda d: d.full_name)
     days.sort(key=lambda d: d.worked.day, reverse=True)
@@ -888,8 +938,10 @@ class PersonHistory:
     """
 
     person: Footprint
-    days: list[WorkedDay]
+    sessions: list[WorkSession]
     total_hours: float
+    #: Distinct dates somebody checked in on, so a night shift counts once rather than
+    #: twice for the two dates it touches.
     days_present: int
     #: Days they checked in and never checked out, past the point where one could still
     #: arrive. These count no hours, so they are the days somebody has to rule on.
@@ -913,7 +965,7 @@ async def person_history(
     if person is None:
         return None
 
-    # Ascending: _pair_into_days walks the stream in order, pairing each Out with the In
+    # Ascending: _pair_into_sessions walks the stream in order, pairing each Out with the In
     # before it. Handed the rows newest-first it would pair nothing.
     accepted = [
         (row[0], row[1])
@@ -930,12 +982,12 @@ async def person_history(
         ).all()
     ]
 
-    days = _pair_into_days(accepted, expiry_hours)
+    sessions = _pair_into_sessions(accepted, expiry_hours)
 
     return PersonHistory(
         person=person,
-        days=days,
-        total_hours=round(sum(day.hours for day in days), 2),
-        days_present=len(days),
-        missed_outs=sum(1 for day in days if day.missed_out),
+        sessions=sessions,
+        total_hours=round(sum(s.hours for s in sessions), 2),
+        days_present=len({s.day for s in sessions if not s.orphan_out}),
+        missed_outs=sum(1 for s in sessions if s.missed_out),
     )

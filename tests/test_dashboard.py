@@ -1055,7 +1055,7 @@ async def test_a_full_day_is_one_line_with_in_out_and_hours(client):
     assert attempts.text.count("TS4012") == 2
     assert days.text.count("TS4012") == 1
 
-    assert "One line per person per day" in days.text
+    assert "One line per check-in" in days.text
     assert "Alice Example" in days.text
 
 
@@ -1082,8 +1082,11 @@ async def test_the_hours_skip_a_break_that_was_punched_out_and_back_in(client):
     day = (yesterday.astimezone().date()).isoformat()
     page = await client.get(f"/admin/register?view=days&from={day}&to={day}")
 
-    assert page.text.count("TS4012") == 1
-    assert "7h" in page.text
+    # Two sessions, because they checked out and back in: four hours and three, never the
+    # eight that measuring first-to-last would have given.
+    assert page.text.count("TS4012") == 2
+    assert "4h" in page.text
+    assert "3h" in page.text
     assert "8h" not in page.text
 
 
@@ -1095,9 +1098,7 @@ async def test_a_missing_punch_is_flagged_not_guessed(client):
     page = await client.get("/admin/register?view=days")
 
     # Still in the building as far as the system knows, so no invented leaving time.
-    # The tag carries the time they came in, which is what tells a contradictory-looking
-    # row apart from a real one - see the open_since tests below.
-    assert "In since" in page.text
+    assert "Still in" in page.text
 
 
 async def test_failures_are_left_out_of_the_day_view_but_stay_in_the_log(client):
@@ -1129,7 +1130,7 @@ async def test_the_two_views_are_linked_both_ways(client):
     assert "view=days" in attempts.text
 
     days = await client.get("/admin/register?view=days")
-    assert "In and out per day" in days.text
+    assert "Check in and check out" in days.text
 
 
 async def test_the_filters_survive_switching_view(client):
@@ -1383,7 +1384,7 @@ async def test_a_day_with_no_check_out_reads_as_missed_once_it_is_too_late(clien
 
     # The badge in the Out column, not the "Missed check-outs" summary card above it.
     assert 't-bad">Missed<' in page.text
-    assert "In since" not in page.text
+    assert "Still in" not in page.text
 
     factory = get_session_factory()
 
@@ -1393,10 +1394,10 @@ async def test_a_day_with_no_check_out_reads_as_missed_once_it_is_too_late(clien
         )
 
     assert history.missed_outs == 1
-    assert history.days[0].missed_out is True
-    assert history.days[0].open_now is False
-    # No leaving time is invented, so the day earns nothing.
-    assert history.days[0].hours == 0.0
+    assert history.sessions[0].missed_out is True
+    assert history.sessions[0].open_now is False
+    # No leaving time is invented, so the session earns nothing.
+    assert history.sessions[0].hours == 0.0
 
 
 async def test_a_check_in_from_an_hour_ago_still_reads_as_still_in(client):
@@ -1408,7 +1409,7 @@ async def test_a_check_in_from_an_hour_ago_still_reads_as_still_in(client):
 
     page = await client.get("/admin/people/TS4012")
 
-    assert "In since" in page.text
+    assert "Still in" in page.text
     assert 't-bad">Missed<' not in page.text
 
 
@@ -1418,28 +1419,28 @@ async def test_a_person_who_is_not_there_is_a_404(client):
     assert (await client.get("/admin/people/NOBODY")).status_code == 404
 
 
-async def test_a_missed_day_shows_no_hours_but_keeps_them_in_the_record(client):
-    """Asked for by the user: a figure beside "Missed" reads as the day's answer.
+async def test_a_forgotten_check_in_does_not_swallow_the_hours_already_earned(client):
+    """What pairing by session buys, in the case that worried me under the old model.
 
-    The paired part of such a day is a real number - somebody genuinely was at work for it -
-    so it stays in the data and in the monthly totals. It is only kept off the row, where it
-    would be mistaken for a finished day and paid against.
+    Somebody completes a shift, comes back later and forgets to check out. The finished
+    session keeps every minute of it; only the unfinished one is blank. Under the previous
+    day-shaped model the two shared a row, so hiding the unfinished half hid the earned
+    hours with it.
     """
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
 
-    # A completed three-minute pair, then a check-in two days ago that never closed: exactly
-    # Mighty Mike's 30 October.
-    came = datetime.now(timezone.utc) - timedelta(days=2)
-    await backdate("TS4012", [(came, came + timedelta(minutes=3))])
-    await backdate_in_only("TS4012", [came + timedelta(minutes=7)])
+    # Anchored to a morning so both check-ins land on the same local date whatever time of
+    # day the suite runs - otherwise "days present" is 1 or 2 depending on the clock.
+    local = datetime.now().astimezone().tzinfo
+    came = datetime.now(local).replace(hour=8, minute=0, second=0, microsecond=0) - timedelta(days=2)
+    await backdate("TS4012", [(came, came + timedelta(hours=8))])
+    await backdate_in_only("TS4012", [came + timedelta(hours=9)])
 
     page = await client.get("/admin/people/TS4012")
-    rows = page.text
 
-    assert 't-bad">Missed<' in rows
-    # The paired three minutes must not appear on the row beside "Missed".
-    assert "3m" not in rows
+    assert 't-bad">Missed<' in page.text
+    assert "8h" in page.text          # the finished shift is untouched
 
     factory = get_session_factory()
 
@@ -1448,10 +1449,13 @@ async def test_a_missed_day_shows_no_hours_but_keeps_them_in_the_record(client):
             session, "default", "TS4012", expiry_hours=16
         )
 
-    # Still in the record, so nothing is lost to payroll.
-    assert history.days[0].missed_out is True
-    assert history.days[0].hours == 0.05
-    assert history.total_hours == 0.05
+    finished, forgotten = sorted(history.sessions, key=lambda s: s.hours, reverse=True)
+    assert finished.hours == 8.0 and finished.ended is not None
+    assert forgotten.missed_out is True and forgotten.hours == 0.0
+    assert history.total_hours == 8.0
+    assert history.missed_outs == 1
+    # Both started on the same date, so it is one day present, not two.
+    assert history.days_present == 1
 
 
 async def test_the_person_page_no_longer_totals_hours(client):
@@ -1468,12 +1472,11 @@ async def test_the_person_page_no_longer_totals_hours(client):
     assert "Missed check-outs" in page.text
 
 
-async def test_a_day_they_came_back_to_shows_no_leaving_time(client):
-    """The contradiction the user spotted.
+async def test_going_out_and_coming_back_is_two_rows_not_a_contradiction(client):
+    """Mighty Mike's row used to say "out 15:46" and "Still in" at the same time.
 
-    Mighty Mike came in at 15:24, went out at 15:46 and came back at 16:45. The row printed
-    "15:46" in the Out column next to "Still in", which reads as a flat contradiction - and
-    15:46 is not when he left for the day, because he has not left.
+    Both were true of his day and the pair read as nonsense. As sessions there is nothing to
+    reconcile: the finished one shows when he left, the open one shows no leaving time.
     """
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
@@ -1482,14 +1485,35 @@ async def test_a_day_they_came_back_to_shows_no_leaving_time(client):
     await backdate("TS4012", [(base, base + timedelta(minutes=22))])
     await backdate_in_only("TS4012", [base + timedelta(minutes=81)])
 
-    page = await client.get("/admin/people/TS4012")
+    factory = get_session_factory()
 
-    back_in = (base + timedelta(minutes=81)).astimezone().strftime("%H:%M")
-    left_at = (base + timedelta(minutes=22)).astimezone().strftime("%H:%M")
+    async with factory() as session:
+        history = await queries.person_history(
+            session, "default", "TS4012", expiry_hours=16
+        )
 
-    assert f"In since {back_in}" in page.text
-    # The earlier exit must not be sitting in the Out column while they are inside.
-    assert f">{left_at}<" not in page.text
+    assert len(history.sessions) == 2
+    newest, oldest = history.sessions
+
+    assert newest.open_now is True and newest.ended is None
+    assert oldest.open_now is False and oldest.hours == 0.37
+    assert oldest.ended is not None
+    # One date, two sessions.
+    assert history.days_present == 1
+
+
+async def test_a_night_shift_is_one_session_with_its_hours_intact(client):
+    """The change the user asked for.
+
+    22:00 to 06:00 is eight hours. Bucketed by calendar date first, as it used to be, the
+    check-in could never find its check-out and the shift was worth nothing.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    local = datetime.now().astimezone().tzinfo
+    started = datetime.now(local).replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=2)
+    await backdate("TS4012", [(started, started + timedelta(hours=8))])
 
     factory = get_session_factory()
 
@@ -1498,8 +1522,17 @@ async def test_a_day_they_came_back_to_shows_no_leaving_time(client):
             session, "default", "TS4012", expiry_hours=16
         )
 
-    day = history.days[0]
-    assert day.open_now is True
-    assert day.open_since.astimezone().strftime("%H:%M") == back_in
-    # The completed pair still counts: he really did work those 22 minutes.
-    assert day.hours == 0.37
+    assert len(history.sessions) == 1
+    night = history.sessions[0]
+
+    assert night.hours == 8.0
+    assert night.ends_next_day is True
+    assert night.nights == 1
+    # Attributed to the date they came to work, not the date they went home.
+    assert night.day == started.date()
+    assert history.days_present == 1
+    assert history.missed_outs == 0
+
+    page = await client.get("/admin/people/TS4012")
+    assert "8h" in page.text
+    assert "+1" in page.text

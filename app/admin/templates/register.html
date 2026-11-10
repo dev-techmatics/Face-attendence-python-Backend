@@ -2,12 +2,12 @@
 {% block body %}
 <h1>Attendance</h1>
 <p class="when">What happened, punch by punch &middot; {{ window.label }} &middot;
-  {% if paired %}{{ days | length }} day{{ '' if days | length == 1 else 's' }} worked
+  {% if paired %}{{ days | length }} session{{ '' if days | length == 1 else 's' }}
   {% else %}{{ rows | length }} attempt{{ '' if rows | length == 1 else 's' }}{% endif %}</p>
 
 <div class="tabs">
   <a href="/admin/register?{{ query_string }}" class="{{ '' if paired else 'on' }}">Every attempt</a>
-  <a href="/admin/register?{{ query_string }}&amp;view=days" class="{{ 'on' if paired else '' }}">In and out per day</a>
+  <a href="/admin/register?{{ query_string }}&amp;view=days" class="{{ 'on' if paired else '' }}">Check in and check out</a>
 </div>
 
 <div class="panel">
@@ -31,27 +31,28 @@
 
 {% if paired %}
 <div class="panel">
-  <h2>One line per person per day</h2>
+  <h2>One line per check-in</h2>
   {% if days %}
   <table>
-    <thead><tr><th>Day</th><th>Name</th><th>ID</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr></thead>
+    <thead><tr><th>Date</th><th>Name</th><th>ID</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr></thead>
     <tbody>
     {% for d in days %}
       <tr>
         <td>{{ d.worked.day | day }}</td>
         <td>{{ d.full_name }}</td>
         <td>{{ d.external_id }}</td>
-        <td>{{ d.worked.first_in | clock }}</td>
+        <td>{% if d.worked.started %}{{ d.worked.started | clock }}{% else %}&mdash;{% endif %}</td>
         <td>
           {%- if d.worked.missed_out %}<span class="tag t-bad">Missed</span>
           {%- elif d.worked.open_now %}&mdash;
-          {%- elif d.worked.last_out %}{{ d.worked.last_out | clock }}
+          {%- elif d.worked.ended %}{{ d.worked.ended | clock }}{% if d.worked.ends_next_day %}<span
+              class="next-day" title="{{ d.worked.ended | stamp }}">+{{ d.worked.nights }}</span>{% endif %}
           {%- else %}&mdash;{% endif %}
         </td>
         <td>{% if d.worked.missed_out %}&mdash;{% else %}{{ d.worked.hours | hours }}{% endif %}</td>
         <td>
-          {% if d.worked.open_now %}<span class="tag t-in">In since {{ d.worked.open_since | clock }}</span>
-          {% elif d.worked.unpaired %}<span class="tag t-bad">Check this day</span>{% endif %}
+          {% if d.worked.open_now %}<span class="tag t-in">Still in</span>
+          {% elif d.worked.orphan_out %}<span class="tag t-bad">No check-in</span>{% endif %}
         </td>
       </tr>
     {% endfor %}
@@ -62,15 +63,15 @@
   {% endif %}
 </div>
 
-<p class="note">Hours are the time between each in and the out that followed it, so a lunch
-  break punched out and back in is not counted as time at work.
-  <strong>Missed</strong> means they checked in and never checked out, and it is now too late
-  for one to arrive; no hours are shown for those days and no leaving time is invented, so
-  somebody has to decide what should have been recorded. While a person is still inside, the
-  out column stays empty even if they went out and came back earlier &mdash; the tag says
-  when they last came in. Failed attempts are not here at all, because a failure has no other
-  half to pair with; they are on the
-  <a href="/admin/register?{{ query_string }}">Every attempt</a> tab.</p>
+<p class="note">One row per check-in, paired with the check-out that closed it, so somebody
+  who went out at lunch and came back has two rows for that day. Hours are measured from the
+  clock and never from the calendar: a night shift that starts before midnight and ends after
+  it is one row, counted in full, against the date it started &mdash; the
+  <span class="next-day">+1</span> beside a check-out means it landed on a later date, and
+  hovering it shows which. <strong>Missed</strong> means they checked in and never checked
+  out and it is now too late for one to arrive; no hours are shown and no leaving time is
+  invented, so somebody has to decide what should have been recorded. Failed attempts are not
+  here at all, because a failure has no other half to pair with.</p>
 
 {% else %}
 <div class="panel">
@@ -101,8 +102,8 @@
 </div>
 
 <p class="note">One row per attempt, which is why somebody who came and went appears twice.
-  For their day on a single line, use <a href="/admin/register?{{ query_string }}&amp;view=days">In
-  and out per day</a>. Failed attempts are kept on purpose: they are the evidence when
+  For each check-in paired with its check-out, use <a href="/admin/register?{{ query_string }}&amp;view=days">Check
+  in and check out</a>. Failed attempts are kept on purpose: they are the evidence when
   somebody says the machine did not recognise them. Photos are only loaded when you click
   &ldquo;show&rdquo;, and are deleted automatically after {{ retention_days }} days.
   &ldquo;Show&rdquo; also has a delete button, for when somebody asks for their photo to go

@@ -31,21 +31,22 @@
 
 <div class="panel">
   <h2>Check in and check out</h2>
-  {% if history.days %}
+  {% if history.sessions %}
   <table>
-    <thead><tr><th>Day</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr></thead>
+    <thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr></thead>
     <tbody>
-    {% for d in history.days %}
+    {% for d in history.sessions %}
       <tr>
         <td>{{ d.day | day }}</td>
-        <td>{{ d.first_in | clock }}</td>
+        <td>{% if d.started %}{{ d.started | clock }}{% else %}&mdash;{% endif %}</td>
         {#- No leaving time while they are still inside, even when they went out and came
             back: printing the earlier exit beside "Still in" reads as a contradiction, and
             it is not the time they left for the day because they have not. #}
         <td>
           {%- if d.missed_out %}<span class="tag t-bad">Missed</span>
           {%- elif d.open_now %}&mdash;
-          {%- elif d.last_out %}{{ d.last_out | clock }}
+          {%- elif d.ended %}{{ d.ended | clock }}{% if d.ends_next_day %}<span
+              class="next-day" title="{{ d.ended | stamp }}">+{{ d.nights }}</span>{% endif %}
           {%- else %}&mdash;{% endif %}
         </td>
         {#- No figure on a day whose check-out never came. The paired part of it is a real
@@ -53,8 +54,8 @@
             part of one, and somebody would pay against it. #}
         <td>{% if d.missed_out %}&mdash;{% else %}{{ d.hours | hours }}{% endif %}</td>
         <td>
-          {% if d.open_now %}<span class="tag t-in">In since {{ d.open_since | clock }}</span>
-          {% elif d.unpaired %}<span class="tag t-bad">Check this day</span>{% endif %}
+          {% if d.open_now %}<span class="tag t-in">Still in</span>
+          {% elif d.orphan_out %}<span class="tag t-bad">No check-in</span>{% endif %}
         </td>
       </tr>
     {% endfor %}

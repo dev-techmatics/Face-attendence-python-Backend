@@ -503,6 +503,11 @@ def _month_window(month: str | None) -> tuple[str, queries.DayWindow]:
     return first.strftime("%Y-%m"), queries.DayWindow.for_range(first, last)
 
 
+def _csv_stamp(when) -> str:
+    """A full local date and time for a spreadsheet, or empty when there is none."""
+    return "" if when is None else when.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
 def _monthly_view(rows) -> list[dict]:
     return [
         {
@@ -524,10 +529,15 @@ async def monthly(
     request: Request,
     session: SessionDep,
     tenant: TenantDep,
+    settings: SettingsDep,
     _: SignedIn,
 ) -> Response:
     month, window = _month_window(request.query_params.get("month"))
-    rows = _monthly_view(await queries.monthly_totals(session, tenant, window))
+    rows = _monthly_view(
+        await queries.monthly_totals(
+            session, tenant, window, settings.face.open_shift_expiry_hours
+        )
+    )
 
     return _page(
         request,
@@ -545,10 +555,15 @@ async def monthly_csv(
     request: Request,
     session: SessionDep,
     tenant: TenantDep,
+    settings: SettingsDep,
     _: SignedIn,
 ) -> StreamingResponse:
     month, window = _month_window(request.query_params.get("month"))
-    rows = _monthly_view(await queries.monthly_totals(session, tenant, window))
+    rows = _monthly_view(
+        await queries.monthly_totals(
+            session, tenant, window, settings.face.open_shift_expiry_hours
+        )
+    )
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -564,8 +579,13 @@ async def monthly_csv(
                 row["department"] or "",
                 row["days"],
                 f"{row['hours']:.1f}",
-                row["first"].astimezone().strftime("%Y-%m-%d %H:%M"),
-                row["last"].astimezone().strftime("%Y-%m-%d %H:%M"),
+                # Full dates, not just a clock time: a night shift's check-out is on the
+                # following date, and a spreadsheet has no tooltip to explain a bare 06:00.
+                # Either can now be empty - somebody still inside, or a check-out that never
+                # came - and an empty cell is the honest answer where a time was invented
+                # before.
+                _csv_stamp(row["first"]),
+                _csv_stamp(row["last"]),
                 row["unpaired"],
             ]
         )
