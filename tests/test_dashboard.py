@@ -344,8 +344,8 @@ async def test_monthly_totals_and_export(client):
     sheet = book[book.sheetnames[0]]
     headers = [c.value for c in sheet[1]]
 
-    assert headers == ["Employee ID", "Name", "Department", "Date", "Day", "In", "Out",
-                       "Hours", "Missed punch", "Reason"]
+    assert headers == ["Employee ID", "Name", "Department", "Date", "Day", "Check in",
+                       "Check out", "Hours", "Missed punch", "Reason"]
 
 
 # ---- staff view --------------------------------------------------------------------------
@@ -1581,16 +1581,19 @@ async def test_the_export_has_a_row_for_every_date_including_absences(client):
     rows = await export_rows(client)
 
     mine = [r for r in rows if r["Employee ID"] == "TS4012"]
-    worked_rows = [r for r in mine if r["In"]]
-    empty_rows = [r for r in mine if not r["In"] and not r["Out"]]
+    worked_rows = [r for r in mine if r["Check in"] != "-"]
+    empty_rows = [r for r in mine if r["Check in"] == "-" and r["Check out"] == "-"]
 
     assert len(worked_rows) == 1
     assert worked_rows[0]["Date"] == worked.date().isoformat()
     assert worked_rows[0]["Hours"] == 8.0
-    assert worked_rows[0]["In"] == "09:00"
-    assert worked_rows[0]["Out"] == "17:00"
-    # A date nobody turned up is still a row, with its times blank and no verdict on it.
+    # Both ends carry their date, so a night worker's two dates are readable off the row.
+    assert worked_rows[0]["Check in"] == worked.strftime("%Y-%m-%d %H:%M")
+    assert worked_rows[0]["Check out"] == (worked + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    # A date nobody turned up is still a row, dashed rather than blank - 96% of a sheet
+    # left blank read as a failed download.
     assert empty_rows, "a date with no attendance must still appear"
+    assert all(r["Missed punch"] == "-" for r in empty_rows)
     assert all(r["Reason"] is None for r in mine), "Reason is HR's column, never ours"
 
 
@@ -1623,8 +1626,8 @@ async def test_a_missing_half_is_named_in_the_export(client):
     rows = await export_rows(client)
     day = next(r for r in rows if r["Date"] == came.date().isoformat())
 
-    assert day["In"] == "09:00"
-    assert day["Out"] in (None, "")
+    assert day["Check in"] == came.strftime("%Y-%m-%d %H:%M")
+    assert day["Check out"] == "-"
     assert day["Missed punch"] == "out"
     assert day["Reason"] is None
 
@@ -1644,10 +1647,11 @@ async def test_a_night_shift_in_the_export_carries_a_full_check_out_timestamp(cl
     next_morning = started + timedelta(hours=8)
 
     assert night["Hours"] == 8.0
-    assert night["In"] == "22:00"
-    # Counted against the date it started, and the check-out names the following morning
-    # rather than a bare 06:00 that could be read as the same day.
-    assert night["Out"] == next_morning.strftime("%d %b %H:%M")
+    # Counted against the date it started, and BOTH ends name their own date, so the night
+    # worker's two dates can be read straight off the row.
+    assert night["Check in"] == started.strftime("%Y-%m-%d %H:%M")
+    assert night["Check out"] == next_morning.strftime("%Y-%m-%d %H:%M")
+    assert night["Check out"].startswith((started.date() + timedelta(days=1)).isoformat())
 
 
 async def test_a_month_value_still_means_that_whole_month(client):
@@ -1711,3 +1715,64 @@ async def test_a_backwards_range_is_read_the_right_way_round(client):
         "attendance-2026-10-16_to_2026-11-15.xlsx"
         in export.headers["content-disposition"]
     )
+
+
+async def test_a_day_with_several_sessions_is_several_rows_none_contradicting(client):
+    """The row the user circled: "in 15:24, out 15:46" beside a flag saying out was missing.
+
+    Both halves were true of Mighty Mike's 10 November - those were the first check-in and
+    the last check-out of the date, while a third check-in was never closed - and the row as
+    a whole was nonsense. One row per pair makes the contradiction impossible to express.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    local = datetime.now().astimezone().tzinfo
+    base = datetime.now(local).replace(hour=9, minute=0, second=0, microsecond=0) - timedelta(days=2)
+
+    await backdate("TS4012", [(base, base + timedelta(hours=4))])
+    await backdate_in_only("TS4012", [base + timedelta(hours=6)])
+
+    rows = await export_rows(client)
+    day = [r for r in rows if r["Date"] == base.date().isoformat()]
+
+    assert len(day) == 2, "a finished pair and an unfinished one are two rows"
+
+    finished, unfinished = sorted(day, key=lambda r: r["Check in"])
+
+    assert finished["Check out"] != "-" and finished["Hours"] == 4.0
+    assert finished["Missed punch"] == "-"
+
+    assert unfinished["Check out"] == "-"
+    assert unfinished["Missed punch"] == "out"
+
+    # No row may claim a check-out and a missing check-out at once.
+    assert not any(r["Check out"] != "-" and r["Missed punch"] == "out" for r in rows)
+
+
+async def test_the_export_handles_several_people_sharing_a_date(client):
+    """Regression: sorting compared an aware timestamp against a naive sentinel.
+
+    With one person in a test the rows for a date never had to be ordered against each
+    other, so it passed. With six people in the real database it raised on the first row and
+    the download would have failed outright.
+    """
+    await signed_in_hr(client)
+
+    for employee_id, identity in (("1267", "krishna"), ("12345", "mike"), ("TS4012", "alice")):
+        await enrol(client, employee_id, f"Person {employee_id}", identity)
+
+    local = datetime.now().astimezone().tzinfo
+    worked = datetime.now(local).replace(hour=9, minute=0, second=0, microsecond=0) - timedelta(days=1)
+
+    # All three on the same date, so the rows for it have to be ordered against each other -
+    # which is the comparison that used to raise. They each punched, because the enrolment
+    # guard would otherwise clip people who never did.
+    for employee_id in ("1267", "12345", "TS4012"):
+        await backdate(employee_id, [(worked, worked + timedelta(hours=8))])
+
+    rows = await export_rows(client)
+    same_day = [r for r in rows if r["Date"] == worked.date().isoformat()]
+
+    assert len(same_day) == 3
+    assert [r["Employee ID"] for r in same_day] == ["1267", "12345", "TS4012"]

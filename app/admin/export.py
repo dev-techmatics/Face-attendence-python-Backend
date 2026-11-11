@@ -34,12 +34,19 @@ HEADERS = (
     ("Department", 16),
     ("Date", 12),
     ("Day", 7),
-    ("In", 9),
-    ("Out", 16),
+    ("Check in", 18),
+    ("Check out", 18),
     ("Hours", 8),
     ("Missed punch", 14),
     ("Reason", 34),
 )
+
+#: Written wherever there is nothing to report. A blank cell is ambiguous - it reads as
+#: "nobody filled this in" as easily as "there was nothing here" - and a sheet where 96% of
+#: the cells are empty reads as a failed download, which is exactly what happened when this
+#: was blank. Hours is the one column left empty instead: it is a number column that gets
+#: summed and charted, and a dash turns it into text for anything that walks it.
+NOTHING = "-"
 
 #: One per month, cycled. Each is a (tab, header fill) pair in the same hue: the tab colour
 #: is how somebody finds the month, the header fill is how they know which sheet they are
@@ -61,35 +68,15 @@ def _month_key(on: date) -> tuple[int, int]:
     return (on.year, on.month)
 
 
-def _clock(when: datetime | None) -> str:
-    return "" if when is None else when.astimezone().strftime("%H:%M")
+def _stamp(when: datetime | None) -> str:
+    """A whole local date and time, or a dash.
 
-
-def _stamp_if_later(start: datetime | None, finish: datetime | None) -> str:
-    """The check-out as a clock time, or a whole timestamp when it is the next morning.
-
-    A night shift ends on the following date and a bare ``06:00`` in a spreadsheet cannot
-    say so. Only those rows carry the date, so the column stays readable on an ordinary
-    month of day shifts.
+    Both ends carry their date, on every row. Only the check-out used to, on the grounds
+    that a column of repeated dates is noise - but a night worker checks IN on the 3rd and
+    OUT on the 4th, and reading that off one column while the other shows a bare clock time
+    is exactly the thing HR asked to stop doing.
     """
-    if finish is None:
-        return ""
-
-    local_finish = finish.astimezone()
-
-    if start is not None and local_finish.date() != start.astimezone().date():
-        return local_finish.strftime("%d %b %H:%M")
-
-    return local_finish.strftime("%H:%M")
-
-
-def _missing(row: DailyRow) -> str:
-    """Which half of the pair never arrived - a fact, not a verdict."""
-    if row.status == "No check-out" or row.status == "Still checked in":
-        return "out"
-    if row.status == "Check-out with no check-in":
-        return "in"
-    return ""
+    return NOTHING if when is None else when.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def months_between(first: date, last: date) -> list[tuple[int, int]]:
@@ -144,14 +131,16 @@ def build_workbook(rows: list[DailyRow], first: date, last: date) -> bytes:
             values = (
                 row.external_id,
                 row.full_name,
-                row.department or "",
+                row.department or NOTHING,
                 row.on.strftime("%Y-%m-%d"),
                 row.on.strftime("%a"),
-                _clock(row.checked_in),
-                _stamp_if_later(row.checked_in, row.checked_out),
+                _stamp(row.checked_in),
+                _stamp(row.checked_out),
+                # Left empty, not dashed: this column is summed, and text in it would make
+                # the whole column text to anything that walks it.
                 round(row.hours, 2) if row.hours else "",
-                _missing(row),
-                # Reason: HR's own column, deliberately left empty.
+                row.missing or NOTHING,
+                # Reason: HR's own column, deliberately left empty for them to write in.
                 "",
             )
 

@@ -998,26 +998,31 @@ async def person_history(
 
 @dataclass(frozen=True)
 class DailyRow:
-    """One employee, one date, for the payroll export.
+    """One line of the payroll sheet: a single check-in and the check-out that closed it.
 
-    A date with no attendance is still a row. HR downloads a quarter of this to find days
-    that should have been paid and were not, and a day somebody never turned up is exactly
-    the day they are looking for - leaving it out would mean reading the gaps between dates
-    to find it.
+    A **session**, not a day. One row per date looked tidier and lied on any day with more
+    than one session: Mighty Mike's 10 November showed "in 15:24, out 15:46" and a flag
+    saying a check-out was missing, because those were the first check-in and the last
+    check-out of the date while a third check-in at 16:45 was never closed. Every half of
+    that row was true and the row as a whole was nonsense.
+
+    A row is now one pair, so ``hours`` is always ``out - in`` and nothing in it can
+    disagree with anything else in it. A date with no punches at all still gets exactly one
+    row - that row is what a loss-of-pay check is hunting.
     """
 
     external_id: str
     full_name: str
     department: str | None
     on: date
-    #: Earliest check-in on this date, and the check-out that closed the last session of it.
-    #: ``checked_out`` can fall on the FOLLOWING date after a night shift, which is why the
-    #: export writes whole timestamps rather than clock times.
     checked_in: datetime | None
     checked_out: datetime | None
     hours: float
-    sessions: int
-    status: str
+    #: "out" when the check-out never came, "in" for a check-out with no check-in before it,
+    #: empty when the pair is complete. A fact about the record, not a verdict on the person.
+    missing: str
+    #: True for a date nobody punched at all.
+    absent: bool
 
 
 async def daily_breakdown(
@@ -1025,12 +1030,15 @@ async def daily_breakdown(
 ) -> list[DailyRow]:
     """Every employee, every date in the window, in employee-id order.
 
-    Built on :func:`_pair_into_sessions` like everything else, so a night shift is one
-    session counted in full against the date it started - not two half rows either side of
-    midnight.
+    One row per check-in/check-out pair, so a day somebody went out and came back is two
+    rows rather than one row that has to summarise them and cannot do it honestly. Built on
+    :func:`_pair_into_sessions` like every other screen, so a night shift is one row counted
+    in full against the date it started.
 
-    Dates before somebody was registered are left out: reporting them absent would be
-    inventing a liability for days they did not work here.
+    Dates before somebody was registered are left out - reporting absence for days they were
+    not an employee invents a liability - but attendance always overrides that guard, since
+    re-registration moves the enrolment timestamp forward and a punch earlier than it is
+    real.
     """
     people = (
         await session.execute(
@@ -1041,7 +1049,6 @@ async def daily_breakdown(
                 Person.department,
                 Person.enrolled_at_utc,
                 Person.created_at_utc,
-                Person.status,
             ).where(Person.tenant_id == tenant)
         )
     ).all()
@@ -1071,11 +1078,10 @@ async def daily_breakdown(
     local_zone = datetime.now().astimezone().tzinfo
     first_date = window.start_utc.astimezone(local_zone).date()
     last_date = (window.end_utc.astimezone(local_zone) - timedelta(seconds=1)).date()
-    today = datetime.now(local_zone).date()
 
     rows: list[DailyRow] = []
 
-    for person_id, external_id, full_name, department, enrolled_at, created_at, _status in people:
+    for person_id, external_id, full_name, department, enrolled_at, created_at in people:
         sessions = _pair_into_sessions(by_person.get(person_id, []), expiry_hours)
 
         on_date: dict[date, list[WorkSession]] = {}
@@ -1083,27 +1089,21 @@ async def daily_breakdown(
         for s in sessions:
             on_date.setdefault(s.day, []).append(s)
 
-        # Nothing before they existed here - reporting absence for days somebody was not yet
-        # an employee invents a liability. But a punch always wins over that guard: if there
-        # is attendance on an earlier date, whatever the enrolment timestamp says, the person
-        # was plainly here and dropping the row would hide real work. Re-registration moves
-        # that timestamp forward, so this is not hypothetical.
         joined = enrolled_at or created_at
         start = first_date
 
         if joined is not None:
-            earliest = min(on_date) if on_date else None
             boundary = joined.astimezone(local_zone).date()
 
-            if earliest is not None:
-                boundary = min(boundary, earliest)
+            if on_date:
+                boundary = min(boundary, min(on_date))
 
             start = max(first_date, boundary)
 
         cursor = start
 
         while cursor <= last_date:
-            todays = on_date.get(cursor, [])
+            todays = sorted(on_date.get(cursor, []), key=lambda s: s.started or s.ended)
 
             if not todays:
                 rows.append(
@@ -1115,43 +1115,35 @@ async def daily_breakdown(
                         checked_in=None,
                         checked_out=None,
                         hours=0.0,
-                        sessions=0,
-                        # Today is not over, so silence about it is not absence.
-                        status="" if cursor == today else "Absent",
+                        missing="",
+                        absent=True,
                     )
                 )
                 cursor += timedelta(days=1)
                 continue
 
-            ordered = sorted(todays, key=lambda s: s.started or s.ended)
-            starts = [s.started for s in ordered if s.started is not None]
-            ends = [s.ended for s in ordered if s.ended is not None]
-            last = ordered[-1]
+            for spell in todays:
+                if spell.orphan_out:
+                    missing = "in"
+                elif spell.ended is None:
+                    missing = "out"
+                else:
+                    missing = ""
 
-            if last.missed_out:
-                status = "No check-out"
-            elif last.open_now:
-                status = "Still checked in"
-            elif any(s.orphan_out for s in ordered):
-                status = "Check-out with no check-in"
-            elif any(s.ends_next_day for s in ordered):
-                status = "Overnight"
-            else:
-                status = "Present"
-
-            rows.append(
-                DailyRow(
-                    external_id=external_id,
-                    full_name=full_name,
-                    department=department,
-                    on=cursor,
-                    checked_in=min(starts) if starts else None,
-                    checked_out=max(ends) if ends else None,
-                    hours=round(sum(s.hours for s in ordered), 2),
-                    sessions=len(ordered),
-                    status=status,
+                rows.append(
+                    DailyRow(
+                        external_id=external_id,
+                        full_name=full_name,
+                        department=department,
+                        on=cursor,
+                        checked_in=spell.started,
+                        checked_out=spell.ended,
+                        hours=spell.hours,
+                        missing=missing,
+                        absent=False,
+                    )
                 )
-            )
+
             cursor += timedelta(days=1)
 
     # Employee id ascending, as HR asked. Numeric ids sort as numbers so 2 comes before 10,
@@ -1161,6 +1153,16 @@ async def daily_breakdown(
         raw = row.external_id
         return (0, int(raw), "") if raw.isdigit() else (1, 0, raw.upper())
 
-    rows.sort(key=lambda r: r.on)
+    def when(row: DailyRow) -> float:
+        """Seconds, not a datetime.
+
+        Sorting on the timestamps themselves meant comparing an aware value against a naive
+        sentinel the moment two people shared a date, which raises. One person in a test
+        never triggers it; six people in the real database do, on the first row.
+        """
+        anchor = row.checked_in or row.checked_out
+        return anchor.timestamp() if anchor is not None else 0.0
+
+    rows.sort(key=lambda r: (r.on, when(r)))
     rows.sort(key=by_id)
     return rows
