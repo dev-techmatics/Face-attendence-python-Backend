@@ -40,6 +40,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, update
 
 from app.admin import lockout, queries
+from app.admin.export import build_workbook
 from app.api.deps import ImageStoreDep, SessionDep, SettingsDep, TenantDep
 from app.core.enums import (
     AttendanceDecision,
@@ -571,21 +572,20 @@ async def monthly(
     )
 
 
-@router.get("/monthly.csv")
-async def monthly_csv(
+@router.get("/monthly.xlsx")
+async def monthly_export(
     request: Request,
     session: SessionDep,
     tenant: TenantDep,
     settings: SettingsDep,
     _: SignedIn,
 ) -> StreamingResponse:
-    """The payroll sheet: one row per employee per date, in employee-id order.
+    """The payroll workbook: one row per employee per date, a sheet per month.
 
     Not a copy of what is on screen. The screen answers "how many days was everybody here";
     this answers "what happened on the 14th", which is the question somebody reconciling a
-    quarter's pay is actually asking. So every date is a row, including the ones nobody
-    turned up for - a day with no attendance is precisely what they are hunting, and a file
-    that simply omits it makes them read the gaps between dates to find it.
+    quarter's pay is actually asking. See app/admin/export.py for why each column is there -
+    in particular why Reason is left empty and why there is no status.
     """
     params = request.query_params
     first_month, last_month, window = _month_range(
@@ -596,50 +596,18 @@ async def monthly_csv(
         session, tenant, window, settings.face.open_shift_expiry_hours
     )
 
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "Employee ID",
-            "Name",
-            "Department",
-            "Date",
-            "Day",
-            "Check in",
-            "Check out",
-            "Hours",
-            "Sessions",
-            "Status",
-        ]
+    book = build_workbook(
+        rows,
+        date.fromisoformat(f"{first_month}-01"),
+        date.fromisoformat(f"{last_month}-01"),
     )
-
-    for row in rows:
-        writer.writerow(
-            [
-                row.external_id,
-                row.full_name,
-                row.department or "",
-                row.on.isoformat(),
-                row.on.strftime("%a"),
-                # Whole timestamps, not clock times: after a night shift the check-out is on
-                # the following date, and a bare "06:00" in a spreadsheet cannot say so.
-                _csv_stamp(row.checked_in),
-                _csv_stamp(row.checked_out),
-                f"{row.hours:.2f}" if row.hours else "",
-                row.sessions or "",
-                row.status,
-            ]
-        )
-
-    buffer.seek(0)
-
     span = first_month if first_month == last_month else f"{first_month}_to_{last_month}"
 
     return StreamingResponse(
-        iter([buffer.getvalue()]),
-        media_type="text/csv",
+        iter([book]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f'attachment; filename="attendance-{span}.csv"',
+            "Content-Disposition": f'attachment; filename="attendance-{span}.xlsx"',
             "Cache-Control": "no-store",
         },
     )

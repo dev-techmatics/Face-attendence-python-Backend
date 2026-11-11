@@ -11,7 +11,7 @@
       <input type="month" id="to" name="to" value="{{ last_month }}"></div>
     <button type="submit">Show</button>
     <a class="btn ghost"
-       href="/admin/monthly.csv?from={{ first_month }}&amp;to={{ last_month }}">Download for Excel</a>
+       href="/admin/monthly.xlsx?from={{ first_month }}&amp;to={{ last_month }}">Download for Excel</a>
   </form>
   <p class="note" style="margin:0; padding:0 16px 14px;">Set both to the same month for one
     month, or span a quarter in one go.</p>
@@ -43,10 +43,12 @@
 
 <p class="note">Click a name for that person's check-in and check-out times.</p>
 
-<p class="note"><strong>Download for Excel</strong> is a different, fuller thing: one row per
-  employee per date, in employee-id order, with the check-in, the check-out, the hours and a
-  status. <strong>Days nobody turned up are rows too</strong>, marked
-  <em>Absent</em> &mdash; those are the ones a loss-of-pay check is looking for, and a file
-  that left them out would mean reading the gaps between dates to find them. Check-outs are
-  written as whole timestamps, so a night shift that ends the next morning says so.</p>
+<p class="note"><strong>Download for Excel</strong> is a different, fuller thing: a workbook
+  with <strong>one sheet per month</strong>, each in its own colour, holding one row per
+  employee per date in employee-id order &mdash; the check-in, the check-out, the hours, and
+  which half of a pair is missing where one is. <strong>Days nobody turned up are rows
+  too</strong>, with the times left blank: those are the ones a loss-of-pay check is looking
+  for, and a file that left them out would mean reading the gaps between dates to find them.
+  The <em>Reason</em> column is left empty on purpose &mdash; it is yours to write in. A
+  check-out that lands the next morning carries its date, so a night shift reads correctly.</p>
 {% endblock %}

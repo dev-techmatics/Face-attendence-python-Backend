@@ -7,7 +7,6 @@ appear at all when no password is configured.
 
 from __future__ import annotations
 
-import csv
 import io
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -17,6 +16,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from sqlalchemy import select, update
+
+from openpyxl import load_workbook
 
 from app.admin import queries
 from app.api.rate_limit import reset_rate_limits
@@ -136,6 +137,22 @@ async def backdate(person_external_id: str, pairs: list[tuple[datetime, datetime
                 )
 
         await session.commit()
+
+
+async def export_rows(client, query: str = "") -> list[dict]:
+    """The workbook's rows as dicts, across every month sheet."""
+    export = await client.get(f"/admin/monthly.xlsx{query}")
+    book = load_workbook(io.BytesIO(export.content))
+
+    rows = []
+
+    for name in book.sheetnames:
+        sheet = book[name]
+        headers = [c.value for c in sheet[1]]
+        for values in sheet.iter_rows(min_row=2, values_only=True):
+            rows.append(dict(zip(headers, values)))
+
+    return rows
 
 
 async def backdate_in_only(person_external_id: str, times: list[datetime]) -> None:
@@ -319,13 +336,16 @@ async def test_monthly_totals_and_export(client):
     assert page.status_code == 200
     assert "Alice Example" in page.text
 
-    export = await client.get("/admin/monthly.csv")
+    export = await client.get("/admin/monthly.xlsx")
     assert export.status_code == 200
-    # The export is a per-day payroll sheet, not a copy of the screen's headcount.
-    assert export.text.splitlines()[0].startswith(
-        "Employee ID,Name,Department,Date,Day,Check in,Check out,Hours,Sessions,Status"
-    )
-    assert "TS4012" in export.text
+    assert export.headers["content-type"].endswith("spreadsheetml.sheet")
+
+    book = load_workbook(io.BytesIO(export.content))
+    sheet = book[book.sheetnames[0]]
+    headers = [c.value for c in sheet[1]]
+
+    assert headers == ["Employee ID", "Name", "Department", "Date", "Day", "In", "Out",
+                       "Hours", "Missed punch", "Reason"]
 
 
 # ---- staff view --------------------------------------------------------------------------
@@ -1558,20 +1578,20 @@ async def test_the_export_has_a_row_for_every_date_including_absences(client):
     worked = datetime.now(local).replace(hour=9, minute=0, second=0, microsecond=0) - timedelta(days=3)
     await backdate("TS4012", [(worked, worked + timedelta(hours=8))])
 
-    export = await client.get("/admin/monthly.csv")
-    rows = list(csv.DictReader(io.StringIO(export.text)))
+    rows = await export_rows(client)
 
     mine = [r for r in rows if r["Employee ID"] == "TS4012"]
-    present = [r for r in mine if r["Status"] == "Present"]
-    absent = [r for r in mine if r["Status"] == "Absent"]
+    worked_rows = [r for r in mine if r["In"]]
+    empty_rows = [r for r in mine if not r["In"] and not r["Out"]]
 
-    assert len(present) == 1
-    assert present[0]["Date"] == worked.date().isoformat()
-    assert present[0]["Hours"] == "8.00"
-    assert present[0]["Check in"].endswith("09:00")
-    assert present[0]["Check out"].endswith("17:00")
-    # Every other date in the month up to yesterday is a row saying so.
-    assert absent, "a date with no attendance must still appear"
+    assert len(worked_rows) == 1
+    assert worked_rows[0]["Date"] == worked.date().isoformat()
+    assert worked_rows[0]["Hours"] == 8.0
+    assert worked_rows[0]["In"] == "09:00"
+    assert worked_rows[0]["Out"] == "17:00"
+    # A date nobody turned up is still a row, with its times blank and no verdict on it.
+    assert empty_rows, "a date with no attendance must still appear"
+    assert all(r["Reason"] is None for r in mine), "Reason is HR's column, never ours"
 
 
 async def test_the_export_is_in_employee_id_order_numerically(client):
@@ -1581,8 +1601,7 @@ async def test_the_export_is_in_employee_id_order_numerically(client):
     await enrol(client, "1267", "Krishna", "krishna")
     await enrol(client, "TS4012", "Alice", "alice")
 
-    export = await client.get("/admin/monthly.csv")
-    rows = list(csv.DictReader(io.StringIO(export.text)))
+    rows = await export_rows(client)
 
     seen = []
     for r in rows:
@@ -1590,6 +1609,24 @@ async def test_the_export_is_in_employee_id_order_numerically(client):
             seen.append(r["Employee ID"])
 
     assert seen == ["1267", "12345", "TS4012"]
+
+
+async def test_a_missing_half_is_named_in_the_export(client):
+    """"Missed punch" says which half never arrived - a fact, not a judgement."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    local = datetime.now().astimezone().tzinfo
+    came = datetime.now(local).replace(hour=9, minute=0, second=0, microsecond=0) - timedelta(days=2)
+    await backdate_in_only("TS4012", [came])
+
+    rows = await export_rows(client)
+    day = next(r for r in rows if r["Date"] == came.date().isoformat())
+
+    assert day["In"] == "09:00"
+    assert day["Out"] in (None, "")
+    assert day["Missed punch"] == "out"
+    assert day["Reason"] is None
 
 
 async def test_a_night_shift_in_the_export_carries_a_full_check_out_timestamp(client):
@@ -1601,23 +1638,30 @@ async def test_a_night_shift_in_the_export_carries_a_full_check_out_timestamp(cl
     started = datetime.now(local).replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=2)
     await backdate("TS4012", [(started, started + timedelta(hours=8))])
 
-    export = await client.get("/admin/monthly.csv")
-    rows = list(csv.DictReader(io.StringIO(export.text)))
+    rows = await export_rows(client)
 
     night = next(r for r in rows if r["Date"] == started.date().isoformat())
+    next_morning = started + timedelta(hours=8)
 
-    assert night["Hours"] == "8.00"
-    assert night["Status"] == "Overnight"
-    # Counted against the date it started, and the check-out names the following date.
-    assert night["Check in"].startswith(started.date().isoformat())
-    assert night["Check out"].startswith((started.date() + timedelta(days=1)).isoformat())
+    assert night["Hours"] == 8.0
+    assert night["In"] == "22:00"
+    # Counted against the date it started, and the check-out names the following morning
+    # rather than a bare 06:00 that could be read as the same day.
+    assert night["Out"] == next_morning.strftime("%d %b %H:%M")
 
 
 async def test_the_export_can_span_several_months(client):
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
 
-    export = await client.get("/admin/monthly.csv?from=2026-09&to=2026-11")
+    export = await client.get("/admin/monthly.xlsx?from=2026-09&to=2026-11")
 
     assert export.status_code == 200
-    assert "attendance-2026-09_to_2026-11.csv" in export.headers["content-disposition"]
+    assert "attendance-2026-09_to_2026-11.xlsx" in export.headers["content-disposition"]
+
+    book = load_workbook(io.BytesIO(export.content))
+
+    # One sheet per month, in order, each in its own colour.
+    assert book.sheetnames == ["Sep 2026", "Oct 2026", "Nov 2026"]
+    colours = [book[name].sheet_properties.tabColor.rgb for name in book.sheetnames]
+    assert len(set(colours)) == 3
