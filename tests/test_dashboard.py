@@ -2082,3 +2082,57 @@ async def test_the_decision_cannot_be_edited(client):
     assert 'name="direction"' in page.text
     assert 'name="happened_at"' in page.text
     assert 'name="decision"' not in page.text
+
+
+async def test_a_session_without_a_role_does_not_bounce_forever(client):
+    """ERR_TOO_MANY_REDIRECTS, reported from a real browser.
+
+    Every browser was holding a cookie that said signed-in and carried no role when roles
+    shipped. The guard on /admin demanded a role and sent them to /admin/login; the login
+    page saw only the timestamp and sent them straight back. Neither page was wrong on its
+    own, and together they were a wall.
+
+    The earlier test for this cleared the cookies first, so it proved nothing about the one
+    case that mattered. This one forges the cookie exactly as the middleware writes it.
+    """
+    import base64
+    import json
+
+    import itsdangerous
+
+    stale = base64.b64encode(
+        json.dumps({"signed_in_at": datetime.now().astimezone().isoformat()}).encode()
+    )
+    client.cookies.set(
+        "fa_session", itsdangerous.TimestampSigner(SECRET).sign(stale).decode()
+    )
+
+    # The login page must render, not redirect.
+    landing = await client.get("/admin/login")
+    assert landing.status_code == 200
+    assert 'name="username"' in landing.text
+
+    # And the guarded page must send them there exactly once.
+    guarded = await client.get("/admin")
+    assert guarded.status_code == 303
+    assert guarded.headers["location"] == "/admin/login"
+
+
+async def test_a_session_with_a_nonsense_role_is_treated_the_same(client):
+    """Same wall, reached by a tampered or half-written cookie rather than an old one."""
+    import base64
+    import json
+
+    import itsdangerous
+
+    forged = base64.b64encode(
+        json.dumps(
+            {"signed_in_at": datetime.now().astimezone().isoformat(), "role": "wat"}
+        ).encode()
+    )
+    client.cookies.set(
+        "fa_session", itsdangerous.TimestampSigner(SECRET).sign(forged).decode()
+    )
+
+    assert (await client.get("/admin/login")).status_code == 200
+    assert (await client.get("/admin")).status_code == 303

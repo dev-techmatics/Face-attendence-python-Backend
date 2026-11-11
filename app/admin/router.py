@@ -95,6 +95,12 @@ def _role_of(request: Request, settings: SettingsDep) -> str:
     role = request.session.get(ROLE_KEY)
 
     if not signed_in_at or role not in (ADMIN, HR):
+        # Clear it before redirecting. A cookie that says signed-in but carries no usable
+        # role is what every browser held when roles shipped, and leaving it in place sent
+        # the login page straight back here - /admin to /admin/login to /admin, which a
+        # browser reports as ERR_TOO_MANY_REDIRECTS and a person reports as "the site is
+        # down".
+        request.session.clear()
         raise _to_login(request)
 
     try:
@@ -176,8 +182,15 @@ async def login_form(request: Request, settings: SettingsDep) -> Response:
     if not dashboard_enabled(settings):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "The dashboard is not switched on.")
 
-    if request.session.get(SESSION_KEY):
+    # Both halves, and the same test the guard uses. Bouncing somebody to /admin on the
+    # strength of a timestamp alone, when the guard there also demands a role, is how the
+    # two pages sent each other in circles.
+    if request.session.get(SESSION_KEY) and request.session.get(ROLE_KEY) in (ADMIN, HR):
         return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+    # Anything less than a complete session is no session. Clearing it here means a stale
+    # cookie costs one page load rather than wedging the browser.
+    request.session.clear()
 
     return templates.TemplateResponse(
         request=request,
