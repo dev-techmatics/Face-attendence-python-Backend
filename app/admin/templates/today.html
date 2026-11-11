@@ -20,7 +20,7 @@
   <h2>Who is in</h2>
   {% if board %}
   <table>
-    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>First in</th><th>Last seen</th><th>Punches</th></tr></thead>
+    <thead><tr><th>Name</th><th>ID</th><th>State</th><th>First in</th><th>Last punch</th><th>Punches</th></tr></thead>
     <tbody>
     {% for p in board %}
       <tr>
@@ -32,7 +32,7 @@
           {% else %}<span class="tag t-off">Not seen</span>{% endif %}
         </td>
         <td>{{ p.first_in | clock }}</td>
-        <td>{{ p.last_seen | clock }}</td>
+        <td>{{ p.last_punch | clock }}</td>
         <td>{{ p.punches or '' }}</td>
       </tr>
     {% endfor %}
@@ -42,4 +42,9 @@
   <p class="empty">Nobody is registered yet, so there is nothing to show.</p>
   {% endif %}
 </div>
+
+<p class="note">Everything here comes from people showing their face at a kiosk and nothing
+  else. &ldquo;Last punch&rdquo; is when somebody last did that, not where they are &mdash;
+  between punches this service knows nothing about anybody, and &ldquo;In&rdquo; means their
+  last punch was a check-in, not that they are at their desk.</p>
 {% endblock %}

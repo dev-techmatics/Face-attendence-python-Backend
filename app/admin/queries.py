@@ -105,7 +105,10 @@ class PersonToday:
     #: "In", "Out" or None when they have not been seen today.
     state: str | None
     first_in: datetime | None
-    last_seen: datetime | None
+    #: When their most recent accepted punch happened. NOT a presence feed - this service
+    #: knows nothing about anybody between punches, and a column called "last seen" implied
+    #: it did.
+    last_punch: datetime | None
     punches: int
 
 
@@ -118,8 +121,8 @@ async def today_board(session: AsyncSession, tenant: str, window: DayWindow) -> 
     accepted = (
         select(
             AttendanceEvent.person_id.label("person_id"),
-            func.min(AttendanceEvent.created_at_utc).label("first_seen"),
-            func.max(AttendanceEvent.created_at_utc).label("last_seen"),
+            func.min(AttendanceEvent.created_at_utc).label("first_punch"),
+            func.max(AttendanceEvent.created_at_utc).label("last_punch"),
             func.count().label("punches"),
         )
         .where(
@@ -139,8 +142,8 @@ async def today_board(session: AsyncSession, tenant: str, window: DayWindow) -> 
                 Person.external_id,
                 Person.full_name,
                 Person.department,
-                accepted.c.first_seen,
-                accepted.c.last_seen,
+                accepted.c.first_punch,
+                accepted.c.last_punch,
                 accepted.c.punches,
             )
             .outerjoin(accepted, accepted.c.person_id == Person.id)
@@ -186,7 +189,7 @@ async def today_board(session: AsyncSession, tenant: str, window: DayWindow) -> 
                 department=department,
                 state=AttendanceDirection(direction).name if direction is not None else None,
                 first_in=first,
-                last_seen=last,
+                last_punch=last,
                 punches=int(punches or 0),
             )
         )

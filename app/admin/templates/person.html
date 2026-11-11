@@ -21,9 +21,9 @@
         {% else %}<span class="tag t-bad">{{ p.status.name }}</span>{% endif %}</td></tr>
       <tr><td>Registration</td><td>{{ p.enrollment_status.name }}
         &middot; {{ p.photos }} face photo{{ '' if p.photos == 1 else 's' }}</td></tr>
-      <tr><td>First seen</td>
+      <tr><td>First punch</td>
         <td>{% if p.first_punch %}{{ p.first_punch | stamp }}{% else %}&mdash;{% endif %}</td></tr>
-      <tr><td>Last seen</td>
+      <tr><td>Last punch</td>
         <td>{% if p.last_punch %}{{ p.last_punch | stamp }}{% else %}&mdash;{% endif %}</td></tr>
     </tbody>
   </table>
