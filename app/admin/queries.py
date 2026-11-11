@@ -231,6 +231,7 @@ async def register_rows(
                 AttendanceEvent.device_id,
                 AttendanceEvent.match_score,
                 AttendanceEvent.probe_image_object_key,
+                AttendanceEvent.edited_at_utc,
             )
             .outerjoin(Person, Person.id == AttendanceEvent.person_id)
             .where(*filters)

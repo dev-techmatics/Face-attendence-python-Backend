@@ -250,3 +250,62 @@ class AttendanceEvent(Base):
     )
 
     processing_ms: Mapped[int] = mapped_column("ProcessingMs", Integer, nullable=False, default=0)
+
+    #: Set the first time an admin changes this row by hand. A flag rather than a join: every
+    #: screen that shows a punch has to be able to say "this was edited" without asking a
+    #: second table, or it will quietly stop saying it.
+    edited_at_utc: Mapped[datetime | None] = mapped_column("EditedAtUtc", UtcDateTime)
+
+
+class AttendanceEdit(Base):
+    """One hand-made change to the attendance record, kept forever.
+
+    The register is evidence. The moment somebody can change a punch, the only thing that
+    keeps it evidence is a complete account of what was changed, from what to what, by whom
+    and why - so this table is append-only and nothing in the application ever updates or
+    deletes a row in it.
+
+    ``changed_by`` is a placeholder today: the dashboard has shared logins, so the honest
+    value is the role. It exists as a column now so that adding named accounts later fills
+    it in rather than requiring a second migration over live audit data.
+    """
+
+    __tablename__ = "AttendanceEdits"
+
+    id: Mapped[int] = mapped_column("Id", Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(
+        "TenantId", String(64), nullable=False, default="default"
+    )
+
+    #: The row that was changed. ON DELETE NO ACTION, like the attendance-to-person link:
+    #: an audit row outliving its subject is better than a delete that silently takes the
+    #: record of the change with it.
+    attendance_event_id: Mapped[int] = mapped_column(
+        "AttendanceEventId",
+        Integer,
+        ForeignKey("AttendanceEvents.Id", ondelete="NO ACTION"),
+        nullable=False,
+    )
+
+    #: "created", "direction", "time" or "deleted".
+    field: Mapped[str] = mapped_column("Field", String(32), nullable=False)
+
+    #: Rendered values, not raw ones. What a person needs to read a year later is "In" and
+    #: "Out", or two timestamps - not an enum number whose meaning has to be looked up.
+    old_value: Mapped[str | None] = mapped_column("OldValue", String(128))
+    new_value: Mapped[str | None] = mapped_column("NewValue", String(128))
+
+    #: Required by the form. An edit without a stated reason is indistinguishable from a
+    #: mistake six months later.
+    reason: Mapped[str] = mapped_column("Reason", String(512), nullable=False)
+
+    #: "admin" until there are named accounts.
+    changed_by_role: Mapped[str] = mapped_column("ChangedByRole", String(32), nullable=False)
+    changed_by: Mapped[str | None] = mapped_column("ChangedBy", String(128))
+
+    #: Where the change was made from. Not identity, but it narrows a question.
+    changed_from: Mapped[str | None] = mapped_column("ChangedFrom", String(64))
+
+    changed_at_utc: Mapped[datetime] = mapped_column(
+        "ChangedAtUtc", UtcDateTime, nullable=False
+    )

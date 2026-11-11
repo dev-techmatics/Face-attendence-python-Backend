@@ -41,8 +41,19 @@ def hours(value: float | None) -> str:
     return f"{minutes}m"
 
 
+def form_datetime(value: datetime | None) -> str:
+    """Local wall-clock time in the shape ``<input type="datetime-local">`` wants.
+
+    Seconds and any offset have to go: the control silently ignores a value it cannot parse,
+    so an edit form would open blank and an admin would retype a time that was already
+    correct.
+    """
+    return value.astimezone().strftime("%Y-%m-%dT%H:%M") if value else ""
+
+
 def register_filters(templates: Jinja2Templates) -> None:
     templates.env.filters["clock"] = clock
     templates.env.filters["stamp"] = stamp
     templates.env.filters["day"] = day
     templates.env.filters["hours"] = hours
+    templates.env.filters["form_datetime"] = form_datetime

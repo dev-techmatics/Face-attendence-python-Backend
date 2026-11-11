@@ -24,7 +24,7 @@ from app.api.rate_limit import reset_rate_limits
 from app.core.config import Settings, reset_settings_cache
 from app.core.enums import AttendanceDecision, AttendanceDirection
 from app.db.session import get_session_factory
-from app.domain.models import AttendanceEvent, Person
+from app.domain.models import AttendanceEdit, AttendanceEvent, Person
 from app.main import create_app
 
 PASSWORD = "office-password-for-tests"
@@ -1887,3 +1887,198 @@ async def test_a_session_from_before_roles_existed_is_signed_out(client):
     client.cookies.clear()
 
     assert (await client.get("/admin")).status_code == 303
+
+
+# ---- correcting the record ---------------------------------------------------------------
+# The one place a punch can be changed. Admin only, every change audited, and a hand-made
+# punch must never read as a face the camera matched.
+
+
+async def an_event_id(client, employee_id: str = "TS4012") -> int:
+    rows = (
+        await client.get("/api/v1/attendance", headers={"X-Api-Key": "test-admin-key"})
+    ).json()["items"]
+    return next(r["id"] for r in rows if r["external_id"] == employee_id)
+
+
+async def test_hr_cannot_open_or_apply_an_edit(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-11-01T09:00:00Z")
+    event_id = await an_event_id(client)
+    await client.get("/admin/logout")
+
+    await signed_in_as_hr(client)
+
+    assert (await client.get(f"/admin/attendance/{event_id}/edit")).status_code == 404
+    assert (
+        await client.post(
+            f"/admin/attendance/{event_id}/edit",
+            data={"direction": "Out", "happened_at": "2026-11-01T18:00", "reason": "nope"},
+        )
+    ).status_code == 404
+    assert (
+        await client.post(
+            "/admin/attendance/add",
+            data={
+                "employee_id": "TS4012",
+                "direction": "In",
+                "happened_at": "2026-11-01T09:00",
+                "reason": "nope",
+            },
+        )
+    ).status_code == 404
+
+
+async def test_an_edit_changes_the_punch_and_is_recorded(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-11-01T09:00:00Z")
+    event_id = await an_event_id(client)
+
+    local = datetime.now().astimezone().tzinfo
+    corrected = (datetime.now(local) - timedelta(hours=3)).replace(second=0, microsecond=0)
+
+    response = await client.post(
+        f"/admin/attendance/{event_id}/edit",
+        data={
+            "direction": "Out",
+            "happened_at": corrected.strftime("%Y-%m-%dT%H:%M"),
+            "reason": "Tapped the wrong button; confirmed with their manager",
+        },
+    )
+
+    assert response.status_code == 303
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        event = (
+            await session.execute(
+                select(AttendanceEvent).where(AttendanceEvent.id == event_id)
+            )
+        ).scalars().one()
+        trail = (
+            await session.execute(
+                select(AttendanceEdit).where(AttendanceEdit.attendance_event_id == event_id)
+            )
+        ).scalars().all()
+
+    assert event.direction == AttendanceDirection.Out
+    assert event.created_at_utc.astimezone(local) == corrected
+    assert event.edited_at_utc is not None
+
+    fields = {t.field: t for t in trail}
+    assert set(fields) == {"direction", "time"}
+    assert fields["direction"].old_value == "In"
+    assert fields["direction"].new_value == "Out"
+    assert "wrong button" in fields["direction"].reason
+    # Shared logins, so the honest answer is the role and the name column stays empty.
+    assert fields["direction"].changed_by_role == "admin"
+    assert fields["direction"].changed_by is None
+
+
+async def test_an_edit_without_a_reason_is_refused(client):
+    """An edit with no stated reason cannot be told from a mistake six months later."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-11-01T09:00:00Z")
+    event_id = await an_event_id(client)
+
+    response = await client.post(
+        f"/admin/attendance/{event_id}/edit",
+        data={"direction": "Out", "happened_at": "2026-11-01T18:00", "reason": "  "},
+    )
+
+    assert response.status_code == 400
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        event = (
+            await session.execute(
+                select(AttendanceEvent).where(AttendanceEvent.id == event_id)
+            )
+        ).scalars().one()
+        trail = (await session.execute(select(AttendanceEdit))).scalars().all()
+
+    assert event.direction == AttendanceDirection.In, "nothing may change"
+    assert list(trail) == []
+
+
+async def test_a_punch_cannot_be_moved_into_the_future(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-11-01T09:00:00Z")
+    event_id = await an_event_id(client)
+
+    later = (datetime.now().astimezone() + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M")
+
+    response = await client.post(
+        f"/admin/attendance/{event_id}/edit",
+        data={"direction": "In", "happened_at": later, "reason": "trying it on"},
+    )
+
+    assert response.status_code == 400
+
+
+async def test_a_hand_added_punch_never_looks_like_a_face_match(client):
+    """It counts for pay, so it must be obvious it was typed rather than recognised."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    local = datetime.now().astimezone().tzinfo
+    when = (datetime.now(local) - timedelta(hours=5)).replace(second=0, microsecond=0)
+
+    response = await client.post(
+        "/admin/attendance/add",
+        data={
+            "employee_id": "TS4012",
+            "direction": "In",
+            "happened_at": when.strftime("%Y-%m-%dT%H:%M"),
+            "reason": "Kiosk was down; let in by reception",
+        },
+    )
+
+    assert response.status_code == 303
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        event = (
+            await session.execute(
+                select(AttendanceEvent).order_by(AttendanceEvent.id.desc()).limit(1)
+            )
+        ).scalars().one()
+        trail = (
+            await session.execute(
+                select(AttendanceEdit).where(
+                    AttendanceEdit.attendance_event_id == event.id
+                )
+            )
+        ).scalars().all()
+
+    assert event.device_id == "manual"
+    assert event.match_score == 0.0
+    assert event.direction == AttendanceDirection.In
+    assert event.created_at_utc.astimezone(local) == when
+    # It still counts, which is the point of adding it.
+    assert event.decision == AttendanceDecision.Accepted
+
+    assert len(trail) == 1
+    assert trail[0].field == "created"
+    assert "Kiosk was down" in trail[0].reason
+
+
+async def test_the_decision_cannot_be_edited(client):
+    """Turning a refusal into an acceptance would record attendance no camera ever saw."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-11-01T09:00:00Z")
+    event_id = await an_event_id(client)
+
+    page = await client.get(f"/admin/attendance/{event_id}/edit")
+
+    assert 'name="direction"' in page.text
+    assert 'name="happened_at"' in page.text
+    assert 'name="decision"' not in page.text

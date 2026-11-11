@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Correct a punch</h1>
+<p class="when">
+  {% if person %}{{ person.full_name }} &middot; {{ person.external_id }}
+  {% else %}Not matched to anybody{% endif %}
+  &middot; <a href="/admin/register">back to Attendance</a></p>
+
+{% if error %}<p class="flash bad">{{ error }}</p>{% endif %}
+
+<div class="panel">
+  <h2>As recorded</h2>
+  <table>
+    <tbody>
+      <tr><td>Recorded at</td><td><strong>{{ event.created_at_utc | stamp }}</strong></td></tr>
+      <tr><td>Direction</td><td>{{ event.direction.name }}</td></tr>
+      <tr><td>Result</td><td>{{ event.decision.name }}</td></tr>
+      <tr><td>Device</td><td>{{ event.device_id or '—' }}</td></tr>
+      <tr><td>Match score</td><td>{{ '%.3f' % event.match_score }}</td></tr>
+      {% if event.captured_at_utc %}
+      <tr><td>Phone said</td><td>{{ event.captured_at_utc | stamp }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Change it</h2>
+  <form method="post" action="/admin/attendance/{{ event.id }}/edit">
+    <div class="filters">
+      <div><label for="direction">Check in or out</label>
+        <select id="direction" name="direction"
+                style="padding:7px 9px;border:1px solid var(--line);border-radius:7px;font:inherit;background:#fff">
+          <option value="In" {{ 'selected' if event.direction.name == 'In' }}>Check in</option>
+          <option value="Out" {{ 'selected' if event.direction.name == 'Out' }}>Check out</option>
+        </select>
+      </div>
+      <div><label for="happened_at">When it happened</label>
+        <input type="datetime-local" id="happened_at" name="happened_at" required
+               value="{{ event.created_at_utc | form_datetime }}"></div>
+    </div>
+    <div class="filters" style="border-top:1px solid var(--line)">
+      <div style="flex:1 1 420px">
+        <label for="reason">Why &mdash; required</label>
+        <input type="text" id="reason" name="reason" required maxlength="500"
+               placeholder="Forgot to check out; confirmed with their manager"
+               style="width:100%">
+      </div>
+      <button type="submit">Save the correction</button>
+      <a class="btn ghost" href="/admin/register">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<p class="note">Only the direction and the time can be changed. The result is fixed on
+  purpose: turning a refusal into an acceptance would record an attendance no camera ever
+  saw, which is the one thing this service exists to prevent. If a refused attempt really was
+  that person, add a punch instead and say so here &mdash; that leaves both the refusal and
+  the correction on the record.</p>
+
+<p class="note">Every change is kept, with the old value, the new value, the reason and the
+  moment it was made. The record says it was an <strong>admin</strong>, not which one: the
+  dashboard has one shared admin login, so that is as far as it can honestly go.</p>
+
+{% if history %}
+<div class="panel">
+  <h2>What has already been changed</h2>
+  <table>
+    <thead><tr><th>When</th><th>Field</th><th>From</th><th>To</th><th>Reason</th><th>By</th></tr></thead>
+    <tbody>
+    {% for h in history %}
+      <tr>
+        <td>{{ h.changed_at_utc | stamp }}</td>
+        <td>{{ h.field }}</td>
+        <td>{{ h.old_value or '—' }}</td>
+        <td>{{ h.new_value or '—' }}</td>
+        <td class="reason">{{ h.reason }}</td>
+        <td>{{ h.changed_by or h.changed_by_role }}{% if h.changed_from %}
+          &middot; {{ h.changed_from }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

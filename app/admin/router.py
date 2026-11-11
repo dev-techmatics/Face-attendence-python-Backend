@@ -350,6 +350,9 @@ def _register_view(rows) -> list[dict]:
             "device": row[6],
             "score": row[7],
             "has_photo": bool(row[8]),
+            # A row somebody changed by hand must say so wherever it is read, or the figure
+            # it feeds cannot be explained later.
+            "edited": row[9] is not None,
         }
         for row in rows
     ]
