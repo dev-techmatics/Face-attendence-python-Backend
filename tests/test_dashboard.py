@@ -28,6 +28,7 @@ from app.domain.models import AttendanceEvent, Person
 from app.main import create_app
 
 PASSWORD = "office-password-for-tests"
+HR_PASSWORD = "hr-password-for-tests"
 SECRET = "x" * 48
 KIOSK = {"Authorization": "Bearer test-device-key"}
 
@@ -63,6 +64,7 @@ def build(tmp_path, **overrides) -> Settings:
             "duplicate_punch_window_minutes": 0,
         },
         admin_ui_password=PASSWORD,
+        hr_ui_password=HR_PASSWORD,
         session_secret=SECRET,
     )
     values.update(overrides)
@@ -225,17 +227,17 @@ async def test_hr_pages_need_a_sign_in(client):
 
 
 async def test_a_wrong_password_is_refused(client):
-    response = await client.post("/admin/login", data={"password": "guess"})
+    response = await client.post("/admin/login", data={"username": "super", "password": "guess"})
 
     assert response.status_code == 401
-    assert "not right" in response.text
+    assert "do not match" in response.text
 
 
 async def test_hr_can_sign_in_and_see_everyone(client):
     await enrol(client, "TS4012", "Alice Example", "alice")
     await enrol(client, "TS4013", "Bob Example", "bob")
 
-    signed_in = await client.post("/admin/login", data={"password": PASSWORD})
+    signed_in = await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     assert signed_in.status_code == 303
 
     today = await client.get("/admin")
@@ -245,7 +247,7 @@ async def test_hr_can_sign_in_and_see_everyone(client):
 
 
 async def test_signing_out_of_hr_ends_the_session(client):
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     assert (await client.get("/admin")).status_code == 200
 
     await client.get("/admin/logout")
@@ -269,7 +271,7 @@ async def test_the_register_shows_failures_and_exports_csv(client):
         files={"face": upload("stranger-front.jpg")},
     )
 
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     page = await client.get("/admin/register")
     assert page.status_code == 200
@@ -286,7 +288,7 @@ async def test_the_register_shows_failures_and_exports_csv(client):
 async def test_people_lists_unfinished_registrations_first(client):
     await enrol(client, "TS4012", "Alice Example", "alice")
 
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     page = await client.get("/admin/people")
 
     assert page.status_code == 200
@@ -309,7 +311,7 @@ async def test_problems_groups_failures_with_a_likely_cause(client):
             files={"face": upload("stranger-front.jpg")},
         )
 
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     page = await client.get("/admin/problems")
 
     assert page.status_code == 200
@@ -330,7 +332,7 @@ async def test_monthly_totals_and_export(client):
         ],
     )
 
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     page = await client.get("/admin/monthly")
     assert page.status_code == 200
@@ -421,7 +423,7 @@ async def test_a_staff_sign_in_does_not_open_the_hr_pages(client):
 
 async def test_an_hr_sign_in_does_not_become_a_staff_member(client):
     await enrol(client, "TS4012", "Alice Example", "alice")
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     page = await client.get("/me")
 
@@ -524,18 +526,18 @@ async def test_repeated_wrong_passwords_lock_the_caller_out(client):
     lockout.reset()
 
     for attempt in range(4):
-        response = await client.post("/admin/login", data={"password": f"guess{attempt}"})
+        response = await client.post("/admin/login", data={"username": "super", "password": f"guess{attempt}"})
         assert response.status_code == 401
-        assert "not right" in response.text, f"attempt {attempt}"
+        assert "do not match" in response.text, f"attempt {attempt}"
 
     # The fifth starts the pause.
-    fifth = await client.post("/admin/login", data={"password": "guess5"})
+    fifth = await client.post("/admin/login", data={"username": "super", "password": "guess5"})
     assert fifth.status_code == 401
     assert "Too many wrong passwords" in fifth.text
 
     # And the right password is refused too, so the lockout cannot be stepped around by
     # guessing until you happen to be right.
-    correct = await client.post("/admin/login", data={"password": PASSWORD})
+    correct = await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     assert correct.status_code == 401
     assert "Too many wrong passwords" in correct.text
 
@@ -548,16 +550,16 @@ async def test_the_right_password_clears_the_count(client):
     lockout.reset()
 
     for attempt in range(3):
-        await client.post("/admin/login", data={"password": f"guess{attempt}"})
+        await client.post("/admin/login", data={"username": "super", "password": f"guess{attempt}"})
 
-    signed_in = await client.post("/admin/login", data={"password": PASSWORD})
+    signed_in = await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     assert signed_in.status_code == 303
 
     # Somebody who fumbled their password twice and then got it right starts clean, rather
     # than being two tries from a lockout for the next quarter of an hour.
     for attempt in range(4):
-        response = await client.post("/admin/login", data={"password": f"again{attempt}"})
-        assert "not right" in response.text, f"attempt {attempt}"
+        response = await client.post("/admin/login", data={"username": "super", "password": f"again{attempt}"})
+        assert "do not match" in response.text, f"attempt {attempt}"
 
     lockout.reset()
 
@@ -586,7 +588,7 @@ async def test_staff_sign_in_is_not_affected_by_the_hr_lockout(client):
     lockout.reset()
 
     for attempt in range(6):
-        await client.post("/admin/login", data={"password": f"guess{attempt}"})
+        await client.post("/admin/login", data={"username": "super", "password": f"guess{attempt}"})
 
     signed_in = await client.post("/me/signin", files={"photo": upload("alice-front.jpg")})
     assert signed_in.status_code == 303
@@ -600,7 +602,7 @@ async def test_staff_sign_in_is_not_affected_by_the_hr_lockout(client):
 async def test_hr_pages_are_never_cached(client):
     """Refreshing has to ask the server, or the board shows a moment that has passed."""
     await enrol(client, "TS4012", "Alice Example", "alice")
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     for path in ("/admin", "/admin/register", "/admin/people", "/admin/problems", "/admin/monthly"):
         response = await client.get(path)
@@ -623,7 +625,7 @@ async def test_a_new_registration_shows_on_the_board_without_a_punch(client):
 
     This is the question HR asks a minute after a kiosk enrolment: did it take?
     """
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     before = await client.get("/admin")
     assert "Carol Example" not in before.text
@@ -661,7 +663,7 @@ async def photographed_punch(client) -> int:
 
 async def test_the_photo_page_shows_the_face_and_who_it_belongs_to(client):
     event_id = await photographed_punch(client)
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     page = await client.get(f"/admin/photo/{event_id}")
 
@@ -676,7 +678,7 @@ async def test_the_photo_page_shows_the_face_and_who_it_belongs_to(client):
 
 async def test_deleting_a_photo_needs_confirming_first(client):
     event_id = await photographed_punch(client)
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     plain = await client.get(f"/admin/photo/{event_id}")
     assert "Delete this photo" in plain.text
@@ -692,7 +694,7 @@ async def test_deleting_a_photo_needs_confirming_first(client):
 
 async def test_deleting_a_photo_removes_the_image_but_keeps_the_record(client):
     event_id = await photographed_punch(client)
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     factory = get_session_factory()
 
@@ -731,7 +733,7 @@ async def test_deleting_a_photo_removes_the_image_but_keeps_the_record(client):
 
 async def test_the_register_still_lists_a_punch_whose_photo_was_deleted(client):
     event_id = await photographed_punch(client)
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     await client.post(f"/admin/photo/{event_id}/delete")
 
     register = await client.get("/admin/register")
@@ -744,7 +746,7 @@ async def test_the_register_still_lists_a_punch_whose_photo_was_deleted(client):
 
 async def test_the_page_says_so_when_the_photo_is_already_gone(client):
     event_id = await photographed_punch(client)
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     await client.post(f"/admin/photo/{event_id}/delete")
 
     page = await client.get(f"/admin/photo/{event_id}")
@@ -756,7 +758,7 @@ async def test_the_page_says_so_when_the_photo_is_already_gone(client):
 
 async def test_deleting_twice_is_harmless(client):
     event_id = await photographed_punch(client)
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     assert (await client.post(f"/admin/photo/{event_id}/delete")).status_code == 303
     # Somebody refreshing, or two people on the same row. Neither should produce an error.
@@ -777,13 +779,13 @@ async def test_a_stranger_cannot_see_or_delete_a_photo(client):
     assert refused.headers["location"] == "/admin/login"
 
     # And it is still there afterwards.
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
     assert (await client.get(f"/admin/photo/{event_id}/image")).status_code == 200
 
 
 async def test_a_photo_from_another_tenant_is_not_reachable(client):
     event_id = await photographed_punch(client)
-    await client.post("/admin/login", data={"password": PASSWORD})
+    await client.post("/admin/login", data={"username": "super", "password": PASSWORD})
 
     factory = get_session_factory()
 
@@ -804,7 +806,7 @@ async def test_a_photo_from_another_tenant_is_not_reachable(client):
 
 
 async def signed_in_hr(client):
-    assert (await client.post("/admin/login", data={"password": PASSWORD})).status_code == 303
+    assert (await client.post("/admin/login", data={"username": "super", "password": PASSWORD})).status_code == 303
 
 
 async def test_hr_can_add_somebody_who_can_then_clock_in(client):
@@ -1776,3 +1778,112 @@ async def test_the_export_handles_several_people_sharing_a_date(client):
 
     assert len(same_day) == 3
     assert [r["Employee ID"] for r in same_day] == ["1267", "12345", "TS4012"]
+
+
+# ---- the two logins ----------------------------------------------------------------------
+# Shared logins, not accounts: the dashboard can tell an admin from somebody in HR and
+# cannot tell one admin from another. Enough to decide which screens to show.
+
+
+async def signed_in_as_hr(client):
+    assert (
+        await client.post("/admin/login", data={"username": "hr", "password": HR_PASSWORD})
+    ).status_code == 303
+
+
+async def test_the_login_asks_for_a_username_as_well(client):
+    page = await client.get("/admin/login")
+
+    assert 'name="username"' in page.text
+    assert 'name="password"' in page.text
+
+
+async def test_each_login_lands_in_its_own_role(client):
+    await signed_in_as_hr(client)
+    assert (await client.get("/admin")).status_code == 200
+
+    await client.get("/admin/logout")
+
+    await signed_in_hr(client)
+    assert (await client.get("/admin")).status_code == 200
+
+
+async def test_the_right_password_with_the_wrong_username_is_refused(client):
+    """Otherwise the username is decoration and there is only really one credential."""
+    response = await client.post(
+        "/admin/login", data={"username": "hr", "password": PASSWORD}
+    )
+
+    assert response.status_code == 401
+    assert (await client.get("/admin")).status_code == 303
+
+
+async def test_the_refusal_never_says_which_half_was_wrong(client):
+    """A message that distinguishes them turns the login into a way of finding usernames."""
+    no_such_user = await client.post(
+        "/admin/login", data={"username": "nobody", "password": "whatever"}
+    )
+    real_user_bad_password = await client.post(
+        "/admin/login", data={"username": "super", "password": "whatever"}
+    )
+
+    assert "do not match" in no_such_user.text
+    assert "do not match" in real_user_bad_password.text
+
+
+async def test_hr_is_not_shown_problems_or_the_attempt_log(client):
+    await signed_in_as_hr(client)
+
+    page = await client.get("/admin")
+
+    assert "/admin/problems" not in page.text
+    assert "Every attempt" not in page.text
+
+
+async def test_an_admin_is_shown_both(client):
+    await signed_in_hr(client)
+
+    page = await client.get("/admin")
+    register = await client.get("/admin/register")
+
+    assert "/admin/problems" in page.text
+    assert "Every attempt" in register.text
+
+
+async def test_hr_cannot_reach_the_admin_only_pages_by_typing_them(client):
+    """Hiding a link is not access control.
+
+    Each of these is reachable by address, so each is refused by the route as well as
+    missing from the nav. A 404 rather than a 403, so the shape of what exists is not
+    readable from outside.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-11-01T09:00:00Z")
+    await client.get("/admin/logout")
+
+    await signed_in_as_hr(client)
+
+    for path in ("/admin/problems", "/admin/register.csv", "/admin/photo/1"):
+        assert (await client.get(path)).status_code == 404, path
+
+
+async def test_hr_gets_the_paired_view_even_when_they_ask_for_the_log(client):
+    """?view= is not a permission. Forcing it server-side is what makes the tab honest."""
+    await signed_in_as_hr(client)
+
+    page = await client.get("/admin/register?view=attempts")
+
+    assert "One line per check-in" in page.text
+    assert "Every attempt, newest first" not in page.text
+
+
+async def test_a_session_from_before_roles_existed_is_signed_out(client):
+    """Such a cookie has no role, and guessing one would hand somebody the wrong access."""
+    await signed_in_hr(client)
+    assert (await client.get("/admin")).status_code == 200
+
+    # Forge the old shape: signed in, no role.
+    client.cookies.clear()
+
+    assert (await client.get("/admin")).status_code == 303

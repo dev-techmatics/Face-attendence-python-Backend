@@ -50,6 +50,11 @@
   .t-in { background: var(--in-bg); color: var(--in); }
   .t-out { background: var(--out-bg); color: var(--out); }
   .t-bad { background: var(--bad-bg); color: var(--bad); }
+  /* Which login this is. Small and quiet - it matters when a screen is missing something
+     somebody expected, and not otherwise. */
+  .whoami { color: var(--muted); font-size: 11px; text-transform: uppercase;
+            letter-spacing: .06em; border: 1px solid var(--line); border-radius: 20px;
+            padding: 2px 9px; margin-left: 6px; }
   /* "+1" beside a check-out that landed on a later date - a night shift. Small and raised
      rather than a tag: it qualifies the time it sits next to, it is not a status of its
      own, and on a page of day shifts it should be invisible until it matters. */
@@ -143,8 +148,11 @@
           URL stays /admin/register so no bookmark breaks. #}
       <a href="/admin/register" class="{{ 'on' if page == 'register' }}">Attendance</a>
       <a href="/admin/people" class="{{ 'on' if page == 'people' }}">People</a>
-      <a href="/admin/problems" class="{{ 'on' if page == 'problems' }}">Problems</a>
+      {#- Admin only. The route refuses HR as well; this just stops offering them a door
+          that will not open. #}
+      {% if is_admin %}<a href="/admin/problems" class="{{ 'on' if page == 'problems' }}">Problems</a>{% endif %}
       <a href="/admin/monthly" class="{{ 'on' if page == 'monthly' }}">Monthly</a>
+      <span class="whoami" title="{{ 'Full access' if is_admin else 'HR access' }}">{{ role }}</span>
     </nav>
     <span class="out"><a href="/admin/logout">Sign out</a></span>
   </div>

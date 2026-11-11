@@ -5,10 +5,14 @@
   {% if paired %}{{ days | length }} session{{ '' if days | length == 1 else 's' }}
   {% else %}{{ rows | length }} attempt{{ '' if rows | length == 1 else 's' }}{% endif %}</p>
 
+{#- Only an admin gets the raw log. For HR there is one view, so there are no tabs to
+    choose between rather than a tab that refuses them. #}
+{% if is_admin %}
 <div class="tabs">
   <a href="/admin/register?{{ query_string }}" class="{{ '' if paired else 'on' }}">Every attempt</a>
   <a href="/admin/register?{{ query_string }}&amp;view=days" class="{{ 'on' if paired else '' }}">Check in and check out</a>
 </div>
+{% endif %}
 
 <div class="panel">
   <form class="filters" method="get" action="/admin/register">
@@ -25,7 +29,8 @@
     </div>
     {% endif %}
     <button type="submit">Show</button>
-    <a class="btn ghost" href="/admin/register.csv?{{ query_string }}">Download for Excel</a>
+    {% if is_admin %}<a class="btn ghost"
+       href="/admin/register.csv?{{ query_string }}">Download for Excel</a>{% endif %}
   </form>
 </div>
 
@@ -71,7 +76,8 @@
   hovering it shows which. <strong>Missed</strong> means they checked in and never checked
   out and it is now too late for one to arrive; no hours are shown and no leaving time is
   invented, so somebody has to decide what should have been recorded. Failed attempts are not
-  here at all, because a failure has no other half to pair with.</p>
+  here at all, because a failure has no other half to pair with{% if is_admin %}; they are on
+  the <a href="/admin/register?{{ query_string }}">Every attempt</a> tab{% endif %}.</p>
 
 {% else %}
 <div class="panel">

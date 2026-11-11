@@ -62,6 +62,13 @@ register_filters(templates)
 #: without anything server-side to keep.
 SESSION_KEY = "signed_in_at"
 
+#: Which of the two logins this session used. A session without it is from before roles
+#: existed and is treated as signed out rather than quietly granted either role.
+ROLE_KEY = "role"
+
+ADMIN = "admin"
+HR = "hr"
+
 REFRESH_SECONDS = 30
 
 
@@ -72,10 +79,11 @@ def dashboard_enabled(settings) -> bool:
     return bool(settings.admin_ui_password)
 
 
-def require_signed_in(request: Request, settings: SettingsDep) -> None:
-    """Redirects to the login page rather than returning an error.
+def _role_of(request: Request, settings: SettingsDep) -> str:
+    """The signed-in role, or a redirect to the login page.
 
-    A person who opens a bookmark should land on a password box, not a JSON document.
+    Redirects rather than erroring: a person who opens a bookmark should land on a sign-in
+    box, not a JSON document.
     """
     if not dashboard_enabled(settings):
         raise HTTPException(
@@ -84,8 +92,9 @@ def require_signed_in(request: Request, settings: SettingsDep) -> None:
         )
 
     signed_in_at = request.session.get(SESSION_KEY)
+    role = request.session.get(ROLE_KEY)
 
-    if not signed_in_at:
+    if not signed_in_at or role not in (ADMIN, HR):
         raise _to_login(request)
 
     try:
@@ -97,6 +106,34 @@ def require_signed_in(request: Request, settings: SettingsDep) -> None:
         request.session.clear()
         raise _to_login(request)
 
+    return role
+
+
+def require_signed_in(request: Request, settings: SettingsDep) -> str:
+    """Either role will do."""
+    return _role_of(request, settings)
+
+
+def require_admin(request: Request, settings: SettingsDep) -> str:
+    """Admin only.
+
+    Hiding a link is not access control - HR can type the address. Every screen an admin
+    alone may see is guarded here as well as hidden in the nav, and the two must stay in
+    step: a page that is hidden but reachable is worse than one that is neither, because
+    nobody is looking for the hole.
+
+    A 404 rather than a 403, so the shape of what exists is not readable from the outside.
+    """
+    role = _role_of(request, settings)
+
+    if role != ADMIN:
+        logger.info("HR tried to open an admin-only page: %s", request.url.path)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="There is no such page."
+        )
+
+    return role
+
 
 def _to_login(request: Request) -> HTTPException:
     """A 303 dressed as an exception, so a dependency can send someone to the login page."""
@@ -107,14 +144,27 @@ def _to_login(request: Request) -> HTTPException:
     )
 
 
-SignedIn = Annotated[None, Depends(require_signed_in)]
+SignedIn = Annotated[str, Depends(require_signed_in)]
+AdminOnly = Annotated[str, Depends(require_admin)]
 
 
 def _page(request: Request, name: str, page: str, title: str, **context) -> HTMLResponse:
+    """Every dashboard page, with the signed-in role available to the template.
+
+    ``is_admin`` drives what the nav shows. It is read from the session rather than passed
+    in by each route, so a new page cannot forget it and quietly show HR an admin link.
+    """
     return templates.TemplateResponse(
         request=request,
         name=name,
-        context={"page": page, "title": title, "show_nav": True, **context},
+        context={
+            "page": page,
+            "title": title,
+            "show_nav": True,
+            "role": request.session.get(ROLE_KEY),
+            "is_admin": request.session.get(ROLE_KEY) == ADMIN,
+            **context,
+        },
     )
 
 
@@ -136,10 +186,46 @@ async def login_form(request: Request, settings: SettingsDep) -> Response:
     )
 
 
+def _match_login(settings, username: str, password: str) -> str | None:
+    """Which role these credentials are, or None.
+
+    Both pairs are always checked, with a fixed-time comparison on each, and the username is
+    compared the same way as the password. Returning early on a username that does not exist
+    would make "no such user" and "wrong password" take measurably different times, which is
+    how somebody learns that ``super`` is a real login and ``admin`` is not.
+    """
+    given_user = username.strip().lower().encode()
+    given_pass = password.encode()
+
+    candidates = (
+        (ADMIN, settings.admin_ui_username, settings.admin_ui_password),
+        (HR, settings.hr_ui_username, settings.hr_ui_password),
+    )
+
+    matched: str | None = None
+
+    for role, expected_user, expected_pass in candidates:
+        if not expected_pass:
+            # Not configured. Still spend the comparisons, so an unconfigured HR login is
+            # not detectable from the outside either.
+            hmac.compare_digest(given_user, b"")
+            hmac.compare_digest(given_pass, b"")
+            continue
+
+        user_ok = hmac.compare_digest(given_user, expected_user.strip().lower().encode())
+        pass_ok = hmac.compare_digest(given_pass, expected_pass.encode())
+
+        if user_ok and pass_ok:
+            matched = role
+
+    return matched
+
+
 @router.post("/login", response_class=HTMLResponse)
 async def sign_in(
     request: Request,
     settings: SettingsDep,
+    username: Annotated[str, Form()] = "",
     password: Annotated[str, Form()] = "",
 ) -> Response:
     if not dashboard_enabled(settings):
@@ -156,12 +242,14 @@ async def sign_in(
                 "title": "Sign in",
                 "show_nav": False,
                 "error": message,
+                # Kept so a typo in the password does not cost them the username too.
+                "username": username,
             },
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    # Checked before the password is even looked at, so a locked-out caller learns nothing
-    # from how long the answer takes.
+    # Checked before the credentials are even looked at, so a locked-out caller learns
+    # nothing from how long the answer takes.
     waiting = lockout.seconds_remaining(client)
 
     if waiting:
@@ -170,8 +258,11 @@ async def sign_in(
             f"Too many wrong passwords. Try again in {max(1, waiting // 60)} minutes."
         )
 
-    # Fixed-time comparison: a plain equality check leaks the password through timing.
-    if not hmac.compare_digest(password.encode(), settings.admin_ui_password.encode()):
+    role = _match_login(settings, username, password)
+
+    if role is None:
+        # Never says which half was wrong: that would turn the login into a way of finding
+        # out which usernames exist.
         logger.warning("Failed dashboard sign-in from %s", client)
         locked_for = lockout.record_failure(client)
 
@@ -180,10 +271,13 @@ async def sign_in(
                 f"Too many wrong passwords. Try again in {locked_for // 60} minutes."
             )
 
-        return refuse("That password is not right.")
+        return refuse("That username and password do not match.")
 
     lockout.record_success(client)
     request.session[SESSION_KEY] = datetime.now().astimezone().isoformat()
+    request.session[ROLE_KEY] = role
+
+    logger.info("Dashboard sign-in from %s as %s", client, role)
 
     return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -267,7 +361,7 @@ async def register(
     session: SessionDep,
     tenant: TenantDep,
     settings: SettingsDep,
-    _: SignedIn,
+    role: SignedIn,
 ) -> Response:
     params = request.query_params
     first, last = _dates(params.get("from"), params.get("to"))
@@ -277,7 +371,11 @@ async def register(
     # Two ways to read the same punches. "attempts" is the log - one row each, failures
     # included, which is what makes it evidence. "days" pairs them into one row per person
     # per day, which is what somebody asking "when did Krish come and go" actually wants.
-    paired = params.get("view") == "days"
+    #
+    # HR gets the paired view only, and gets it whatever the query string says: the tab is
+    # hidden for them, and hiding a tab somebody can still reach by typing ?view= is not a
+    # restriction, it is a decoration.
+    paired = params.get("view") == "days" or role != ADMIN
 
     window = queries.DayWindow.for_range(first, last)
 
@@ -334,7 +432,7 @@ async def register_csv(
     request: Request,
     session: SessionDep,
     tenant: TenantDep,
-    _: SignedIn,
+    _: AdminOnly,
 ) -> StreamingResponse:
     params = request.query_params
     first, last = _dates(params.get("from"), params.get("to"))
@@ -454,7 +552,7 @@ async def problems(
     request: Request,
     session: SessionDep,
     tenant: TenantDep,
-    _: SignedIn,
+    _: AdminOnly,
 ) -> Response:
     params = request.query_params
     first, last = _dates(params.get("from"), params.get("to"))
@@ -632,7 +730,7 @@ async def photo_page(
     session: SessionDep,
     tenant: TenantDep,
     settings: SettingsDep,
-    _: SignedIn,
+    _: AdminOnly,
     confirm: str | None = None,
 ) -> Response:
     """The face stored at one punch, with the context needed to know whose it is.
@@ -663,7 +761,7 @@ async def photo_image(
     session: SessionDep,
     store: ImageStoreDep,
     tenant: TenantDep,
-    _: SignedIn,
+    _: AdminOnly,
 ) -> Response:
     """The photograph itself, fetched only when a page asks for it.
 
@@ -706,7 +804,7 @@ async def delete_photo(
     session: SessionDep,
     store: ImageStoreDep,
     tenant: TenantDep,
-    _: SignedIn,
+    _: AdminOnly,
 ) -> Response:
     """Erase one stored face photograph. The attendance record itself stays.
 

@@ -309,6 +309,21 @@ class Settings(BaseSettings):
     #: appear just because someone deployed with stock settings.
     admin_ui_password: str = ""
 
+    #: The two sign-ins, and the whole of the access model.
+    #:
+    #: There is no user table. These are shared logins, so the dashboard can tell an admin
+    #: from somebody in HR but cannot tell one admin from another - which is fine for hiding
+    #: screens and is NOT fine for anything that edits a pay record. Whatever gains an edit
+    #: button needs its own audit trail, and that trail can only say "an admin", not who.
+    #: Named accounts are the upgrade; this is deliberately the smaller thing.
+    admin_ui_username: str = "super"
+
+    #: HR sees the attendance itself but not the raw attempt log or the failure diagnostics.
+    #: Leave the password empty and HR cannot sign in at all, which is the safe default for a
+    #: deployment that has not thought about it.
+    hr_ui_username: str = "hr"
+    hr_ui_password: str = ""
+
     #: Signs the dashboard's session cookie. Generated per deployment; changing it logs
     #: everyone out, which is also how you revoke a session.
     session_secret: str = ""

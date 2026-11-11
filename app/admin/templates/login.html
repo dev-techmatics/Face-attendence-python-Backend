@@ -4,8 +4,17 @@
   <h1>Attendance</h1>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   <form method="post" action="/admin/login">
+    <label for="username">Username</label>
+    {#- Not autofocused when it is already filled: after a wrong password the cursor belongs
+        in the password box, not back at a username they just typed correctly. #}
+    <input type="text" id="username" name="username" value="{{ username or '' }}"
+           autocomplete="username" autocapitalize="none" spellcheck="false"
+           {% if not username %}autofocus{% endif %}>
+
     <label for="password">Password</label>
-    <input type="password" id="password" name="password" autofocus autocomplete="current-password">
+    <input type="password" id="password" name="password" autocomplete="current-password"
+           {% if username %}autofocus{% endif %}>
+
     <button type="submit">Sign in</button>
   </form>
 </div>
