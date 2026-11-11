@@ -7,6 +7,7 @@ appear at all when no password is configured.
 
 from __future__ import annotations
 
+import csv
 import io
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -320,7 +321,11 @@ async def test_monthly_totals_and_export(client):
 
     export = await client.get("/admin/monthly.csv")
     assert export.status_code == 200
-    assert "Days present" in export.text
+    # The export is a per-day payroll sheet, not a copy of the screen's headcount.
+    assert export.text.splitlines()[0].startswith(
+        "Employee ID,Name,Department,Date,Day,Check in,Check out,Hours,Sessions,Status"
+    )
+    assert "TS4012" in export.text
 
 
 # ---- staff view --------------------------------------------------------------------------
@@ -1536,3 +1541,83 @@ async def test_a_night_shift_is_one_session_with_its_hours_intact(client):
     page = await client.get("/admin/people/TS4012")
     assert "8h" in page.text
     assert "+1" in page.text
+
+
+# ---- the payroll export ------------------------------------------------------------------
+# HR downloads a quarter of this to reconcile pay, so the shape of it is the requirement:
+# every employee, every date, in employee-id order, with the times and whether anything
+# needs a human.
+
+
+async def test_the_export_has_a_row_for_every_date_including_absences(client):
+    """A day nobody turned up is the row a loss-of-pay check is hunting for."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    local = datetime.now().astimezone().tzinfo
+    worked = datetime.now(local).replace(hour=9, minute=0, second=0, microsecond=0) - timedelta(days=3)
+    await backdate("TS4012", [(worked, worked + timedelta(hours=8))])
+
+    export = await client.get("/admin/monthly.csv")
+    rows = list(csv.DictReader(io.StringIO(export.text)))
+
+    mine = [r for r in rows if r["Employee ID"] == "TS4012"]
+    present = [r for r in mine if r["Status"] == "Present"]
+    absent = [r for r in mine if r["Status"] == "Absent"]
+
+    assert len(present) == 1
+    assert present[0]["Date"] == worked.date().isoformat()
+    assert present[0]["Hours"] == "8.00"
+    assert present[0]["Check in"].endswith("09:00")
+    assert present[0]["Check out"].endswith("17:00")
+    # Every other date in the month up to yesterday is a row saying so.
+    assert absent, "a date with no attendance must still appear"
+
+
+async def test_the_export_is_in_employee_id_order_numerically(client):
+    """1267 before 12345. A plain string sort puts 12345 first, which reads as a mistake."""
+    await signed_in_hr(client)
+    await enrol(client, "12345", "Mike", "mike")
+    await enrol(client, "1267", "Krishna", "krishna")
+    await enrol(client, "TS4012", "Alice", "alice")
+
+    export = await client.get("/admin/monthly.csv")
+    rows = list(csv.DictReader(io.StringIO(export.text)))
+
+    seen = []
+    for r in rows:
+        if r["Employee ID"] not in seen:
+            seen.append(r["Employee ID"])
+
+    assert seen == ["1267", "12345", "TS4012"]
+
+
+async def test_a_night_shift_in_the_export_carries_a_full_check_out_timestamp(client):
+    """A bare "06:00" in a spreadsheet cannot say it was the next morning."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    local = datetime.now().astimezone().tzinfo
+    started = datetime.now(local).replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=2)
+    await backdate("TS4012", [(started, started + timedelta(hours=8))])
+
+    export = await client.get("/admin/monthly.csv")
+    rows = list(csv.DictReader(io.StringIO(export.text)))
+
+    night = next(r for r in rows if r["Date"] == started.date().isoformat())
+
+    assert night["Hours"] == "8.00"
+    assert night["Status"] == "Overnight"
+    # Counted against the date it started, and the check-out names the following date.
+    assert night["Check in"].startswith(started.date().isoformat())
+    assert night["Check out"].startswith((started.date() + timedelta(days=1)).isoformat())
+
+
+async def test_the_export_can_span_several_months(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    export = await client.get("/admin/monthly.csv?from=2026-09&to=2026-11")
+
+    assert export.status_code == 200
+    assert "attendance-2026-09_to_2026-11.csv" in export.headers["content-disposition"]

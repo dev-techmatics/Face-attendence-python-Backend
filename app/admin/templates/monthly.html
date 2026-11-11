@@ -5,10 +5,16 @@
 
 <div class="panel">
   <form class="filters" method="get" action="/admin/monthly">
-    <div><label for="month">Month</label><input type="month" id="month" name="month" value="{{ month }}"></div>
+    <div><label for="from">From month</label>
+      <input type="month" id="from" name="from" value="{{ first_month }}"></div>
+    <div><label for="to">To month</label>
+      <input type="month" id="to" name="to" value="{{ last_month }}"></div>
     <button type="submit">Show</button>
-    <a class="btn ghost" href="/admin/monthly.csv?month={{ month }}">Download for Excel</a>
+    <a class="btn ghost"
+       href="/admin/monthly.csv?from={{ first_month }}&amp;to={{ last_month }}">Download for Excel</a>
   </form>
+  <p class="note" style="margin:0; padding:0 16px 14px;">Set both to the same month for one
+    month, or span a quarter in one go.</p>
 </div>
 
 <div class="panel">
@@ -35,8 +41,12 @@
   starts before midnight and ends after it counts once, against the date it started, because
   check-ins and check-outs are paired on the clock and never on the calendar.</p>
 
-<p class="note">Click a name for that person's check-in and check-out times, or use
-  <strong>Download for Excel</strong>, which still carries the hours, the first check-in, the
-  last check-out and the count of punches with no matching other half &mdash; the detail
-  payroll needs, kept out of the way of the headcount this screen is for.</p>
+<p class="note">Click a name for that person's check-in and check-out times.</p>
+
+<p class="note"><strong>Download for Excel</strong> is a different, fuller thing: one row per
+  employee per date, in employee-id order, with the check-in, the check-out, the hours and a
+  status. <strong>Days nobody turned up are rows too</strong>, marked
+  <em>Absent</em> &mdash; those are the ones a loss-of-pay check is looking for, and a file
+  that left them out would mean reading the gaps between dates to find them. Check-outs are
+  written as whole timestamps, so a night shift that ends the next morning says so.</p>
 {% endblock %}

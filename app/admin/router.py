@@ -489,18 +489,35 @@ async def problems(
     )
 
 
-def _month_window(month: str | None) -> tuple[str, queries.DayWindow]:
-    today_ = date.today()
+def _month_range(first_month: str | None, last_month: str | None) -> tuple[str, str, queries.DayWindow]:
+    """A window covering whole months, from one to another inclusive.
 
-    try:
-        year, month_number = (int(part) for part in (month or "").split("-", 1))
-        first = date(year, month_number, 1)
-    except (ValueError, TypeError):
-        first = today_.replace(day=1)
+    A range rather than a single month because HR reconciles a quarter at a time, and
+    downloading three files to staple together is how a month gets missed.
+    """
 
-    last = (first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    def parse(value: str | None) -> date | None:
+        try:
+            year, month = (int(part) for part in (value or "").split("-", 1))
+            return date(year, month, 1)
+        except (ValueError, TypeError):
+            return None
 
-    return first.strftime("%Y-%m"), queries.DayWindow.for_range(first, last)
+    this_month = date.today().replace(day=1)
+    start = parse(first_month) or this_month
+    end = parse(last_month) or start
+
+    if end < start:
+        start, end = end, start
+
+    # The last day of the end month.
+    last = (end.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+
+    return (
+        start.strftime("%Y-%m"),
+        end.strftime("%Y-%m"),
+        queries.DayWindow.for_range(start, last),
+    )
 
 
 def _csv_stamp(when) -> str:
@@ -532,7 +549,10 @@ async def monthly(
     settings: SettingsDep,
     _: SignedIn,
 ) -> Response:
-    month, window = _month_window(request.query_params.get("month"))
+    params = request.query_params
+    first_month, last_month, window = _month_range(
+        params.get("from") or params.get("month"), params.get("to")
+    )
     rows = _monthly_view(
         await queries.monthly_totals(
             session, tenant, window, settings.face.open_shift_expiry_hours
@@ -546,7 +566,8 @@ async def monthly(
         "Monthly",
         window=window,
         rows=rows,
-        month=month,
+        first_month=first_month,
+        last_month=last_month,
     )
 
 
@@ -558,45 +579,67 @@ async def monthly_csv(
     settings: SettingsDep,
     _: SignedIn,
 ) -> StreamingResponse:
-    month, window = _month_window(request.query_params.get("month"))
-    rows = _monthly_view(
-        await queries.monthly_totals(
-            session, tenant, window, settings.face.open_shift_expiry_hours
-        )
+    """The payroll sheet: one row per employee per date, in employee-id order.
+
+    Not a copy of what is on screen. The screen answers "how many days was everybody here";
+    this answers "what happened on the 14th", which is the question somebody reconciling a
+    quarter's pay is actually asking. So every date is a row, including the ones nobody
+    turned up for - a day with no attendance is precisely what they are hunting, and a file
+    that simply omits it makes them read the gaps between dates to find it.
+    """
+    params = request.query_params
+    first_month, last_month, window = _month_range(
+        params.get("from") or params.get("month"), params.get("to")
+    )
+
+    rows = await queries.daily_breakdown(
+        session, tenant, window, settings.face.open_shift_expiry_hours
     )
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(
-        ["Employee ID", "Name", "Department", "Days present", "Hours", "First in", "Last out", "Unpaired punches"]
+        [
+            "Employee ID",
+            "Name",
+            "Department",
+            "Date",
+            "Day",
+            "Check in",
+            "Check out",
+            "Hours",
+            "Sessions",
+            "Status",
+        ]
     )
 
     for row in rows:
         writer.writerow(
             [
-                row["external_id"],
-                row["name"],
-                row["department"] or "",
-                row["days"],
-                f"{row['hours']:.1f}",
-                # Full dates, not just a clock time: a night shift's check-out is on the
-                # following date, and a spreadsheet has no tooltip to explain a bare 06:00.
-                # Either can now be empty - somebody still inside, or a check-out that never
-                # came - and an empty cell is the honest answer where a time was invented
-                # before.
-                _csv_stamp(row["first"]),
-                _csv_stamp(row["last"]),
-                row["unpaired"],
+                row.external_id,
+                row.full_name,
+                row.department or "",
+                row.on.isoformat(),
+                row.on.strftime("%a"),
+                # Whole timestamps, not clock times: after a night shift the check-out is on
+                # the following date, and a bare "06:00" in a spreadsheet cannot say so.
+                _csv_stamp(row.checked_in),
+                _csv_stamp(row.checked_out),
+                f"{row.hours:.2f}" if row.hours else "",
+                row.sessions or "",
+                row.status,
             ]
         )
 
     buffer.seek(0)
 
+    span = first_month if first_month == last_month else f"{first_month}_to_{last_month}"
+
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="attendance-{month}.csv"',
+            "Content-Disposition": f'attachment; filename="attendance-{span}.csv"',
             "Cache-Control": "no-store",
         },
     )

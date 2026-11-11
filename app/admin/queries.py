@@ -994,3 +994,173 @@ async def person_history(
         days_present=len({s.day for s in sessions if not s.orphan_out}),
         missed_outs=sum(1 for s in sessions if s.missed_out),
     )
+
+
+@dataclass(frozen=True)
+class DailyRow:
+    """One employee, one date, for the payroll export.
+
+    A date with no attendance is still a row. HR downloads a quarter of this to find days
+    that should have been paid and were not, and a day somebody never turned up is exactly
+    the day they are looking for - leaving it out would mean reading the gaps between dates
+    to find it.
+    """
+
+    external_id: str
+    full_name: str
+    department: str | None
+    on: date
+    #: Earliest check-in on this date, and the check-out that closed the last session of it.
+    #: ``checked_out`` can fall on the FOLLOWING date after a night shift, which is why the
+    #: export writes whole timestamps rather than clock times.
+    checked_in: datetime | None
+    checked_out: datetime | None
+    hours: float
+    sessions: int
+    status: str
+
+
+async def daily_breakdown(
+    session: AsyncSession, tenant: str, window: DayWindow, expiry_hours: float | None = None
+) -> list[DailyRow]:
+    """Every employee, every date in the window, in employee-id order.
+
+    Built on :func:`_pair_into_sessions` like everything else, so a night shift is one
+    session counted in full against the date it started - not two half rows either side of
+    midnight.
+
+    Dates before somebody was registered are left out: reporting them absent would be
+    inventing a liability for days they did not work here.
+    """
+    people = (
+        await session.execute(
+            select(
+                Person.id,
+                Person.external_id,
+                Person.full_name,
+                Person.department,
+                Person.enrolled_at_utc,
+                Person.created_at_utc,
+                Person.status,
+            ).where(Person.tenant_id == tenant)
+        )
+    ).all()
+
+    punches = (
+        await session.execute(
+            select(
+                AttendanceEvent.person_id,
+                AttendanceEvent.created_at_utc,
+                AttendanceEvent.direction,
+            )
+            .where(
+                AttendanceEvent.tenant_id == tenant,
+                AttendanceEvent.decision == AttendanceDecision.Accepted,
+                AttendanceEvent.created_at_utc >= window.start_utc,
+                AttendanceEvent.created_at_utc < window.end_utc,
+            )
+            .order_by(AttendanceEvent.created_at_utc)
+        )
+    ).all()
+
+    by_person: dict[int, list[tuple[datetime, int]]] = {}
+
+    for person_id, when, direction in punches:
+        by_person.setdefault(person_id, []).append((when, direction))
+
+    local_zone = datetime.now().astimezone().tzinfo
+    first_date = window.start_utc.astimezone(local_zone).date()
+    last_date = (window.end_utc.astimezone(local_zone) - timedelta(seconds=1)).date()
+    today = datetime.now(local_zone).date()
+
+    rows: list[DailyRow] = []
+
+    for person_id, external_id, full_name, department, enrolled_at, created_at, _status in people:
+        sessions = _pair_into_sessions(by_person.get(person_id, []), expiry_hours)
+
+        on_date: dict[date, list[WorkSession]] = {}
+
+        for s in sessions:
+            on_date.setdefault(s.day, []).append(s)
+
+        # Nothing before they existed here - reporting absence for days somebody was not yet
+        # an employee invents a liability. But a punch always wins over that guard: if there
+        # is attendance on an earlier date, whatever the enrolment timestamp says, the person
+        # was plainly here and dropping the row would hide real work. Re-registration moves
+        # that timestamp forward, so this is not hypothetical.
+        joined = enrolled_at or created_at
+        start = first_date
+
+        if joined is not None:
+            earliest = min(on_date) if on_date else None
+            boundary = joined.astimezone(local_zone).date()
+
+            if earliest is not None:
+                boundary = min(boundary, earliest)
+
+            start = max(first_date, boundary)
+
+        cursor = start
+
+        while cursor <= last_date:
+            todays = on_date.get(cursor, [])
+
+            if not todays:
+                rows.append(
+                    DailyRow(
+                        external_id=external_id,
+                        full_name=full_name,
+                        department=department,
+                        on=cursor,
+                        checked_in=None,
+                        checked_out=None,
+                        hours=0.0,
+                        sessions=0,
+                        # Today is not over, so silence about it is not absence.
+                        status="" if cursor == today else "Absent",
+                    )
+                )
+                cursor += timedelta(days=1)
+                continue
+
+            ordered = sorted(todays, key=lambda s: s.started or s.ended)
+            starts = [s.started for s in ordered if s.started is not None]
+            ends = [s.ended for s in ordered if s.ended is not None]
+            last = ordered[-1]
+
+            if last.missed_out:
+                status = "No check-out"
+            elif last.open_now:
+                status = "Still checked in"
+            elif any(s.orphan_out for s in ordered):
+                status = "Check-out with no check-in"
+            elif any(s.ends_next_day for s in ordered):
+                status = "Overnight"
+            else:
+                status = "Present"
+
+            rows.append(
+                DailyRow(
+                    external_id=external_id,
+                    full_name=full_name,
+                    department=department,
+                    on=cursor,
+                    checked_in=min(starts) if starts else None,
+                    checked_out=max(ends) if ends else None,
+                    hours=round(sum(s.hours for s in ordered), 2),
+                    sessions=len(ordered),
+                    status=status,
+                )
+            )
+            cursor += timedelta(days=1)
+
+    # Employee id ascending, as HR asked. Numeric ids sort as numbers so 2 comes before 10,
+    # and ids that are not numbers sort after them, alphabetically - a plain string sort
+    # would put 12345 before 1267.
+    def by_id(row: DailyRow) -> tuple:
+        raw = row.external_id
+        return (0, int(raw), "") if raw.isdigit() else (1, 0, raw.upper())
+
+    rows.sort(key=lambda r: r.on)
+    rows.sort(key=by_id)
+    return rows
