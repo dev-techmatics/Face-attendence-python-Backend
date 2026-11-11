@@ -1650,14 +1650,19 @@ async def test_a_night_shift_in_the_export_carries_a_full_check_out_timestamp(cl
     assert night["Out"] == next_morning.strftime("%d %b %H:%M")
 
 
-async def test_the_export_can_span_several_months(client):
+async def test_a_month_value_still_means_that_whole_month(client):
+    """Links from before the picker took dates must not silently fall back to today."""
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
 
     export = await client.get("/admin/monthly.xlsx?from=2026-09&to=2026-11")
 
     assert export.status_code == 200
-    assert "attendance-2026-09_to_2026-11.xlsx" in export.headers["content-disposition"]
+    # 2026-09 means the 1st, 2026-11 means the 30th - the whole span, not two single days.
+    assert (
+        "attendance-2026-09-01_to_2026-11-30.xlsx"
+        in export.headers["content-disposition"]
+    )
 
     book = load_workbook(io.BytesIO(export.content))
 
@@ -1665,3 +1670,44 @@ async def test_the_export_can_span_several_months(client):
     assert book.sheetnames == ["Sep 2026", "Oct 2026", "Nov 2026"]
     colours = [book[name].sheet_properties.tabColor.rgb for name in book.sheetnames]
     assert len(set(colours)) == 3
+
+
+async def test_the_export_takes_any_two_dates_not_whole_months(client):
+    """A pay period rarely starts on the 1st."""
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    export = await client.get("/admin/monthly.xlsx?from=2026-10-16&to=2026-11-15")
+    book = load_workbook(io.BytesIO(export.content))
+
+    assert (
+        "attendance-2026-10-16_to_2026-11-15.xlsx"
+        in export.headers["content-disposition"]
+    )
+    # Split across month sheets, because that is how the workbook is organised.
+    assert book.sheetnames == ["Oct 2026", "Nov 2026"]
+
+    dates = []
+    for name in book.sheetnames:
+        sheet = book[name]
+        for values in sheet.iter_rows(min_row=2, values_only=True):
+            if values[3]:
+                dates.append(values[3])
+
+    # The person was enrolled today and has no attendance, so the sheet is clipped to the
+    # dates they existed - that guard is correct and tested elsewhere. What this asserts is
+    # the range itself: nothing may fall outside the two dates asked for.
+    assert dates, "the requested months must produce rows"
+    assert all("2026-10-16" <= d <= "2026-11-15" for d in dates)
+
+
+async def test_a_backwards_range_is_read_the_right_way_round(client):
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+
+    export = await client.get("/admin/monthly.xlsx?from=2026-11-15&to=2026-10-16")
+
+    assert (
+        "attendance-2026-10-16_to_2026-11-15.xlsx"
+        in export.headers["content-disposition"]
+    )

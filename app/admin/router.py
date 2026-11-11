@@ -490,35 +490,47 @@ async def problems(
     )
 
 
-def _month_range(first_month: str | None, last_month: str | None) -> tuple[str, str, queries.DayWindow]:
-    """A window covering whole months, from one to another inclusive.
+def _export_range(first: str | None, last: str | None) -> tuple[date, date, queries.DayWindow]:
+    """Any two dates, inclusive - not whole months.
 
-    A range rather than a single month because HR reconciles a quarter at a time, and
-    downloading three files to staple together is how a month gets missed.
+    HR reconciles a quarter at a time, but a pay period rarely lines up with a calendar
+    month, so the picker takes dates. A month value (``2026-11``) is still accepted and
+    means that whole month, so links and bookmarks from before this took dates keep working
+    rather than silently falling back to today.
     """
 
-    def parse(value: str | None) -> date | None:
+    def parse(value: str | None, month_end: bool) -> date | None:
+        text = (value or "").strip()
+
         try:
-            year, month = (int(part) for part in (value or "").split("-", 1))
-            return date(year, month, 1)
+            return date.fromisoformat(text)
+        except ValueError:
+            pass
+
+        try:
+            year, month = (int(part) for part in text.split("-", 1))
+            first_of = date(year, month, 1)
         except (ValueError, TypeError):
             return None
 
-    this_month = date.today().replace(day=1)
-    start = parse(first_month) or this_month
-    end = parse(last_month) or start
+        if not month_end:
+            return first_of
+
+        return (first_of.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+
+    today = date.today()
+    start = parse(first, month_end=False) or today.replace(day=1)
+    end = parse(last, month_end=True)
+
+    if end is None:
+        # Only a start given: show the rest of that month, which is what the picker used to
+        # do when it took months.
+        end = (start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
 
     if end < start:
         start, end = end, start
 
-    # The last day of the end month.
-    last = (end.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-
-    return (
-        start.strftime("%Y-%m"),
-        end.strftime("%Y-%m"),
-        queries.DayWindow.for_range(start, last),
-    )
+    return start, end, queries.DayWindow.for_range(start, end)
 
 
 def _csv_stamp(when) -> str:
@@ -551,7 +563,7 @@ async def monthly(
     _: SignedIn,
 ) -> Response:
     params = request.query_params
-    first_month, last_month, window = _month_range(
+    first_day, last_day, window = _export_range(
         params.get("from") or params.get("month"), params.get("to")
     )
     rows = _monthly_view(
@@ -567,8 +579,8 @@ async def monthly(
         "Monthly",
         window=window,
         rows=rows,
-        first_month=first_month,
-        last_month=last_month,
+        first_day=first_day.isoformat(),
+        last_day=last_day.isoformat(),
     )
 
 
@@ -588,7 +600,7 @@ async def monthly_export(
     in particular why Reason is left empty and why there is no status.
     """
     params = request.query_params
-    first_month, last_month, window = _month_range(
+    first_day, last_day, window = _export_range(
         params.get("from") or params.get("month"), params.get("to")
     )
 
@@ -596,12 +608,12 @@ async def monthly_export(
         session, tenant, window, settings.face.open_shift_expiry_hours
     )
 
-    book = build_workbook(
-        rows,
-        date.fromisoformat(f"{first_month}-01"),
-        date.fromisoformat(f"{last_month}-01"),
+    book = build_workbook(rows, first_day, last_day)
+    span = (
+        first_day.isoformat()
+        if first_day == last_day
+        else f"{first_day.isoformat()}_to_{last_day.isoformat()}"
     )
-    span = first_month if first_month == last_month else f"{first_month}_to_{last_month}"
 
     return StreamingResponse(
         iter([book]),

@@ -5,16 +5,17 @@
 
 <div class="panel">
   <form class="filters" method="get" action="/admin/monthly">
-    <div><label for="from">From month</label>
-      <input type="month" id="from" name="from" value="{{ first_month }}"></div>
-    <div><label for="to">To month</label>
-      <input type="month" id="to" name="to" value="{{ last_month }}"></div>
+    <div><label for="from">From</label>
+      <input type="date" id="from" name="from" value="{{ first_day }}"></div>
+    <div><label for="to">To</label>
+      <input type="date" id="to" name="to" value="{{ last_day }}"></div>
     <button type="submit">Show</button>
     <a class="btn ghost"
-       href="/admin/monthly.xlsx?from={{ first_month }}&amp;to={{ last_month }}">Download for Excel</a>
+       href="/admin/monthly.xlsx?from={{ first_day }}&amp;to={{ last_day }}">Download for Excel</a>
   </form>
-  <p class="note" style="margin:0; padding:0 16px 14px;">Set both to the same month for one
-    month, or span a quarter in one go.</p>
+  <p class="note" style="margin:0; padding:0 16px 14px;">Any two dates, not whole months
+    &mdash; a pay period rarely starts on the 1st. The workbook still has one sheet per
+    month, so a range that crosses a month boundary arrives split in two.</p>
 </div>
 
 <div class="panel">
