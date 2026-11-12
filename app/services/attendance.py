@@ -398,30 +398,35 @@ class AttendanceService:
     ) -> _ShiftDecision:
         """Apply the shift-length rules on top of the In/Out choice.
 
-        Two rules, and the order between them is the whole design:
+        Three rules, and the order between them is the whole design:
 
         1. A check-in left open longer than ``open_shift_expiry_hours`` is **abandoned**.
-           Nobody worked sixteen hours and forgot to go home; they forgot to check out. The
-           stale In is left unpaired - the register already shows that as "Punch missing" -
-           and this punch starts a new one, whichever direction the device asked for. This is
-           the only place the server overrules the app's choice.
-        2. A check-out sooner than ``minimum_shift_minutes`` after its check-in is
-           **refused**, and the person stays checked in so the shift can still be closed
-           properly later.
+           Nobody worked fourteen hours and forgot to go home; they forgot to check out. The
+           stale In is left unpaired - the register shows it as "Missed" - and this punch
+           starts a new one, whichever direction the device asked for.
+        2. Already checked in, and the device says check in again? They are leaving - that
+           is the only thing left to do. Recording a second check-in instead is what put two
+           in a row on one person's record with no check-out between them, and a day that
+           could never be paired. Before the minimum there is nothing to convert it into, so
+           it is refused and they stay checked in.
+        3. A check-out sooner than ``minimum_shift_minutes`` after its check-in is
+           **refused**, for the same reason.
 
-        Rule 1 has to come before rule 2. Measured against a stale check-in, the next
-        morning's punch is simultaneously "sixteen hours late" and "too soon", and deciding
-        it the other way round would refuse it - leaving somebody unable to start work, with
-        no way to clear it from the kiosk.
+        Rule 1 has to come first. Measured against a stale check-in, the next morning's
+        punch is simultaneously "fourteen hours late" and "too soon", and deciding it the
+        other way round would refuse it - leaving somebody unable to start work, with no way
+        to clear it from the kiosk.
 
         Nothing here invents a punch. The alternative design - writing a closing Out at
-        check-in plus sixteen hours - would read better on the register and would put hours
+        check-in plus the expiry - would read better on the register and would put hours
         nobody worked into payroll.
 
         A check-out with no check-in open is deliberately left alone. It pairs with nothing,
-        so it credits no hours and the register already flags it; overruling it would mean
-        this service second-guessing the app's own in/out state, which
-        ``infer_direction=false`` exists to avoid.
+        so it credits no hours and the register already flags it.
+
+        Rules 1 and 2 both overrule the direction the device asked for, which is why the
+        reply carries the direction actually recorded. An app that sets its own state from
+        which button was pressed drifts out of step with the record.
         """
         wanted = await self._resolve_direction(command, person)
         last = await self._attendance.get_last_accepted(person.id)
@@ -482,23 +487,60 @@ class AttendanceService:
                     ),
                 )
 
-        # Rule 2.
-        if (
-            wanted == AttendanceDirection.Out
-            and open_in is not None
-            and self._settings.minimum_shift_minutes > 0
-        ):
-            worked = now - open_in.created_at_utc
-            minimum = timedelta(minutes=self._settings.minimum_shift_minutes)
+        # Rules 2 and 3 both measure the open shift, so measure it once.
+        if open_in is None:
+            return _ShiftDecision(wanted)
 
-            if worked < minimum:
+        worked = now - open_in.created_at_utc
+        minimum = timedelta(minutes=self._settings.minimum_shift_minutes)
+        long_enough = (
+            self._settings.minimum_shift_minutes <= 0 or worked >= minimum
+        )
+
+        # Rule 2. Already checked in, and the device says check in again.
+        #
+        # Whatever the app's screen said, somebody standing at the camera who is already
+        # checked in is leaving - that is the only thing left to do. Recording a second
+        # check-in instead is what produced two in a row with no check-out between them,
+        # and a day that can never be paired.
+        #
+        # Before the minimum, there is nothing to convert it into: refused, and they stay
+        # checked in so the shift can still be closed properly later.
+        if wanted == AttendanceDirection.In:
+            if long_enough:
+                logger.info(
+                    "Person %s was already checked in %s ago; recording a check-out",
+                    person.id,
+                    _spoken_duration(worked),
+                )
+
                 return _ShiftDecision(
                     AttendanceDirection.Out,
-                    refusal=(
-                        f"Checked in {_spoken_duration(worked)} ago, and a check-out needs "
-                        f"at least {_spoken_duration(minimum)}. You are still checked in."
+                    note=(
+                        f"You were still checked in from "
+                        f"{open_in.created_at_utc.astimezone():%H:%M}, so this is your "
+                        "check-out."
                     ),
                 )
+
+            return _ShiftDecision(
+                AttendanceDirection.Out,
+                refusal=(
+                    f"Already checked in {_spoken_duration(worked)} ago, and a shift needs "
+                    f"at least {_spoken_duration(minimum)} before it can be closed. Still "
+                    "checked in."
+                ),
+            )
+
+        # Rule 3. A check-out, too soon to close the shift.
+        if not long_enough:
+            return _ShiftDecision(
+                AttendanceDirection.Out,
+                refusal=(
+                    f"Checked in {_spoken_duration(worked)} ago, and a check-out needs "
+                    f"at least {_spoken_duration(minimum)}. You are still checked in."
+                ),
+            )
 
         return _ShiftDecision(wanted)
 

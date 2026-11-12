@@ -322,9 +322,9 @@ Note the layering with the existing double-tap guard: a repeat punch within **2 
 answers `Your attendance was already recorded a moment ago` instead. So the two-hour rule is
 only ever seen between 2 minutes and 2 hours.
 
-### 5.2 A check-in left open 16 hours is abandoned
+### 5.2 A check-in left open 14 hours is abandoned
 
-Nobody worked sixteen hours and forgot to go home — they forgot to check out. So the stale
+Nobody worked fourteen hours and forgot to go home — they forgot to check out. So the stale
 check-in is set aside and **the next punch starts a new check-in, even if the app asked for a
 check-out**.
 
@@ -332,8 +332,27 @@ This is the only case where the server overrules the app's choice, and it is why
 in the reply.
 
 The abandoned check-in is left unpaired rather than closed with an invented check-out. A
-fabricated Out would put sixteen hours nobody worked into the month's figures; the admin
-register flags it as "Punch missing" for a person to judge.
+fabricated Out would put fourteen hours nobody worked into the month's figures; the admin
+register shows it as "Missed" for a person to judge.
+
+### 5.2a A second check_in is recorded as the check-out
+
+Somebody already checked in who shows their face again is leaving - it is the only thing
+left to do. **Whatever `type` you send, a check_in while they are already checked in is
+recorded as a check_out**, provided the shift has run past the two-hour minimum.
+
+```json
+{ "success": true, "type": "check_out",
+  "message": "Checked out. You were still checked in from 13:24, so this is your check-out." }
+```
+
+Before the two hours there is nothing to convert it into, so it is refused and they stay
+checked in.
+
+This exists because the alternative recorded two check-ins in a row with nothing between
+them, and two check-ins can never be paired - so that day could never be paid. It is the
+second place the reply's `type` will disagree with what you sent, which is why reading it
+is not optional.
 
 ### 5.3 A check-in within 15 minutes of a check-out is ignored
 
@@ -360,11 +379,12 @@ The attempt is recorded, as it always is, so nothing disappears from the registe
 verify / identify  →  punch(check_in)   →  reply type=check_in   →  show "checked in"
                       punch(check_out)  →  reply type=check_out  →  show "checked out"
                       punch(check_out)  →  reply type=check_in   →  show "checked in"   ← 5.2
+                      punch(check_in)   →  reply type=check_out  →  show "checked out"  ← 5.2a
                       punch(check_out)  →  success=false         →  still checked in    ← 5.1
                       punch(check_in)   →  success=false         →  still checked out   ← 5.3
 ```
 
-The rule is the same in all five lines: **on success, trust `type`; on failure, change
+The rule is the same in all six lines: **on success, trust `type`; on failure, change
 nothing.** The last one is the newest and the easiest to get wrong: a refused check-in
 must leave them checked out, not flip the app into a checked-in state it then cannot
 close.

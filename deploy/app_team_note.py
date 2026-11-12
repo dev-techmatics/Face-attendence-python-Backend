@@ -115,9 +115,14 @@ b) Two shift rules on /v1/attendance/punch, which can refuse or redirect a punch
 
      They stay checked in, so the shift can still be closed later. Nothing is lost.
 
-   * A check-in left open more than 16 hours is treated as abandoned. The next punch starts
+   * A check-in left open more than 14 hours is treated as abandoned. The next punch starts
      a NEW check-in even if the app asked for a check_out - somebody who never checked out
      yesterday is arriving, not leaving.
+
+   * A check_in while they are ALREADY checked in is recorded as a check_out, once the shift
+     has run past two hours. Somebody standing at the camera who is already in is leaving;
+     recording a second check-in instead gave one person two in a row with nothing between
+     them, and two check-ins can never be paired, so that day could never be paid.
 
    * A check_in within 15 minutes of a check_out is ignored - somebody who has finished and
      walks back past the kiosk is not starting a second shift:

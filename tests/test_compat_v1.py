@@ -990,3 +990,86 @@ async def test_the_ignored_scan_is_recorded_not_dropped(client):
 
     assert "re-entry window" in ignored[0]["failure_reason"]
     assert f"{window}-minute" in ignored[0]["failure_reason"]
+
+
+# ---- a second check-in is a check-out ----------------------------------------------------
+# Reported from the live register: Mighty Mike had 11 Nov 19:21 In and 12 Nov 10:12 In with
+# nothing between them. The second was 14h51m later - inside the old sixteen-hour cap, so
+# not abandoned - and the app had asked for a check-in, which the server took at its word.
+# Two check-ins in a row can never be paired, so that day could never be paid.
+
+
+async def test_a_second_check_in_is_recorded_as_the_check_out(client):
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=3)
+
+    # The app says check in again. They are already in, so the only thing left is leaving.
+    body = (await punch(client, "TS4012", "check_in")).json()
+
+    assert body["success"] is True
+    assert body["type"] == "check_out"
+    assert "still checked in" in body["message"].lower()
+
+    rows = await punch_rows(client, "TS4012")
+
+    assert [r["direction"] for r in rows if r["decision"] == "Accepted"] == ["In", "Out"]
+
+
+async def test_two_check_ins_in_a_row_can_no_longer_happen(client):
+    """The shape of the bug, asserted directly."""
+    await register(client, employee_id="TS4012", identity="alice")
+
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=3)
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=3)
+    await punch(client, "TS4012", "check_in")
+
+    accepted = [r for r in await punch_rows(client, "TS4012") if r["decision"] == "Accepted"]
+    directions = [r["direction"] for r in accepted]
+
+    assert "InIn" not in "".join(directions), directions
+
+
+async def test_a_second_check_in_before_the_minimum_is_refused_not_recorded(client):
+    """There is nothing to convert it into yet, and a second In would be unpairable."""
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=0.5)
+
+    body = (await punch(client, "TS4012", "check_in")).json()
+
+    assert body["success"] is False
+    assert "2 hours" in body["message"]
+
+    rows = await punch_rows(client, "TS4012")
+
+    assert [r["decision"] for r in rows] == ["Accepted", "TooSoon"]
+    # Still inside, so the shift can be closed properly later.
+    assert [r["direction"] for r in rows if r["decision"] == "Accepted"] == ["In"]
+
+
+async def test_the_cap_is_fourteen_hours(client):
+    """Fifteen hours later is a new day, not a late check-out."""
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=15)
+
+    body = (await punch(client, "TS4012", "check_in")).json()
+
+    assert body["success"] is True
+    assert body["type"] == "check_in"
+    assert "never closed" in body["message"]
+
+
+async def test_thirteen_hours_still_closes_the_shift(client):
+    """Just inside the cap, so it is somebody leaving after a long day."""
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=13)
+
+    body = (await punch(client, "TS4012", "check_in")).json()
+
+    assert body["success"] is True
+    assert body["type"] == "check_out"

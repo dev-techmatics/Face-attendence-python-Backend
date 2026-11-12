@@ -203,7 +203,7 @@ class FaceRecognitionSettings(BaseSettings):
     #: Deliberately does NOT write a closing punch. Inventing an Out would put hours nobody
     #: worked into payroll; leaving the In unpaired is what the register already flags as
     #: "Punch missing", and a human decides what it should have been.
-    open_shift_expiry_hours: int = 16
+    open_shift_expiry_hours: int = 14
 
     top_n: int = 5
 
