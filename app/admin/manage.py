@@ -47,7 +47,7 @@ from app.api.routers.compat_v1 import EMPLOYEE_ID, normalise_employee_id
 from app.core.enums import EnrollmentStatus, FacePose, PersonStatus
 from app.core.errors import DomainException, FaceProcessingException
 from app.core.templating import TEMPLATE_DIR, register_filters
-from app.domain.models import AttendanceEvent
+from app.domain.models import AttendanceEdit, AttendanceEvent
 from app.services.commands import CaptureFaceCommand, CreatePersonCommand
 
 logger = logging.getLogger(__name__)
@@ -306,6 +306,20 @@ async def delete_person(
 
     for object_key in keys:
         await store.delete(object_key)
+
+    mine = select(AttendanceEvent.id).where(
+        AttendanceEvent.tenant_id == tenant,
+        AttendanceEvent.person_id == footprint.person_id,
+    )
+
+    # The correction trail points at those rows with ON DELETE NO ACTION, deliberately: an
+    # audit record of who changed a punch must not be removable as a side effect of deleting
+    # the punch. A permanent erasure is the one case where it does have to go, so it is
+    # cleared here by hand. Without this the database refuses the whole delete and the page
+    # 500s - which is exactly what happened to the first person who had an edited punch.
+    await session.execute(
+        sql_delete(AttendanceEdit).where(AttendanceEdit.attendance_event_id.in_(mine))
+    )
 
     # Attendance rows hold the person with ON DELETE NO ACTION, so they have to go first or
     # the delete below is refused by the database.

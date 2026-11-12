@@ -1013,6 +1013,62 @@ async def test_deleting_erases_the_person_their_face_and_their_history(client):
         ).scalars().first() is not None
 
 
+async def test_deleting_somebody_whose_punch_was_corrected(client):
+    """The correction trail has to be cleared with them, or the database refuses the delete.
+
+    AttendanceEdits references AttendanceEvents with ON DELETE NO ACTION, so deleting the
+    person used to fail with an integrity error the moment anybody had ever corrected one of
+    their punches - a 500 on the page, with the person still there. Found in production on
+    the first employee who had an edited punch.
+    """
+    await signed_in_hr(client)
+    await enrol(client, "TS4012", "Alice Example", "alice")
+    await punch(client, "TS4012", "alice", "check_in", "2026-11-01T09:00:00Z")
+    event_id = await an_event_id(client)
+
+    local = datetime.now().astimezone().tzinfo
+    corrected = (datetime.now(local) - timedelta(hours=3)).replace(second=0, microsecond=0)
+
+    edited = await client.post(
+        f"/admin/attendance/{event_id}/edit",
+        data={
+            "direction": "Out",
+            "happened_at": corrected.strftime("%Y-%m-%dT%H:%M"),
+            "reason": "Tapped the wrong button",
+        },
+    )
+    assert edited.status_code == 303
+
+    factory = get_session_factory()
+
+    async with factory() as session:
+        trail = (
+            await session.execute(
+                select(AttendanceEdit).where(AttendanceEdit.attendance_event_id == event_id)
+            )
+        ).scalars().all()
+
+    # Guard the guard: without a trail this test would pass against the broken code.
+    assert trail != []
+
+    gone = await client.post("/admin/people/TS4012/delete", data={"confirm": "delete"})
+    assert gone.status_code == 303
+    assert "deleted for good" in (await client.get("/admin/people")).text
+
+    async with factory() as session:
+        assert (
+            await session.execute(select(Person).where(Person.external_id == "TS4012"))
+        ).scalars().all() == []
+
+        # The trail goes with the punches it describes rather than being left behind
+        # pointing at rows that no longer exist.
+        assert (
+            await session.execute(
+                select(AttendanceEdit).where(AttendanceEdit.attendance_event_id == event_id)
+            )
+        ).scalars().all() == []
+
+
 async def test_a_deleted_id_can_be_used_again(client):
     await signed_in_hr(client)
     await enrol(client, "TS4012", "Alice Example", "alice")
