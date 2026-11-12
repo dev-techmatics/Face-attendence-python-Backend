@@ -15,7 +15,7 @@ Everything below already worked and is unchanged except these three things.
 | --- | --- | --- |
 | `POST /v1/faces/verify` | **New endpoint.** "Is this face already registered?" | Optional, but it fixes the duplicate-registration complaint |
 | `POST /v1/attendance/punch` | Reply now includes **`type`** — the direction actually recorded | **Yes. Not optional.** |
-| `POST /v1/attendance/punch` | Two new refusals: too-soon check-out, and abandoned shift | Yes — handle the new messages |
+| `POST /v1/attendance/punch` | Three new refusals: too-soon check-out, abandoned shift, and a check-in right after a check-out | Yes — handle the new messages |
 
 **The one you cannot skip** is `type`. The server can now record a *check-in* when the app
 asked for a *check-out* (section 5.2). If the app keeps setting its own state from which
@@ -283,6 +283,7 @@ state from. It is normally the same as what you sent. When it is not, `message` 
 | Message | What happened |
 | --- | --- |
 | `Checked in 35 minutes ago, and a check-out needs at least 2 hours. You are still checked in.` | **New.** Too soon to check out — section 5.1. The numbers vary |
+| `You already checked out at 17:02. Nothing more to do.` | **New.** They finished and their face passed the camera again — section 5.3. The time varies |
 | `Your attendance was already recorded a moment ago.` | a second punch within 2 minutes |
 | `We couldn't match your face. New here? Tap Register.` | the face did not match this employee ID |
 | `This employee isn't registered. Please register again.` | no such employee ID, or never finished registering |
@@ -306,7 +307,7 @@ do not try to backdate a punch with it.
 
 ## 5. The rules the server now enforces
 
-Both numbers are **configuration here, not code**. If they do not match how people actually
+All three numbers are **configuration here, not code**. If they do not match how people actually
 work, say so and they change with a service restart — no app release.
 
 ### 5.1 A check-out needs at least 2 hours
@@ -334,17 +335,39 @@ The abandoned check-in is left unpaired rather than closed with an invented chec
 fabricated Out would put sixteen hours nobody worked into the month's figures; the admin
 register flags it as "Punch missing" for a person to judge.
 
-### 5.3 What this means for the app's state machine
+### 5.3 A check-in within 15 minutes of a check-out is ignored
+
+Somebody who has finished and walks back past the kiosk is not starting a second shift, so
+their face landing on the screen again records nothing.
+
+The reply is a refusal, but please show it as the reassurance it is — it names the time they
+left and says there is nothing more to do. They have done nothing wrong, and a message that
+reads like an error makes people try again:
+
+```json
+{ "success": false,
+  "message": "You already checked out at 17:02. Nothing more to do." }
+```
+
+This runs **before** everything else, and only in that one direction: a check-in after a
+check-out. A check-out after a check-in is untouched and still answers under section 5.1.
+
+The attempt is recorded, as it always is, so nothing disappears from the register.
+
+### 5.4 What this means for the app's state machine
 
 ```
 verify / identify  →  punch(check_in)   →  reply type=check_in   →  show "checked in"
                       punch(check_out)  →  reply type=check_out  →  show "checked out"
                       punch(check_out)  →  reply type=check_in   →  show "checked in"   ← 5.2
                       punch(check_out)  →  success=false         →  still checked in    ← 5.1
+                      punch(check_in)   →  success=false         →  still checked out   ← 5.3
 ```
 
-The rule is the same in all four lines: **on success, trust `type`; on failure, change
-nothing.**
+The rule is the same in all five lines: **on success, trust `type`; on failure, change
+nothing.** The last one is the newest and the easiest to get wrong: a refused check-in
+must leave them checked out, not flip the app into a checked-in state it then cannot
+close.
 
 ---
 

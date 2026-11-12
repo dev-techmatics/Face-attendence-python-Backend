@@ -981,6 +981,12 @@ async def test_the_ignored_scan_is_recorded_not_dropped(client):
     ignored = [r for r in rows if r["decision"] == "AlreadyCheckedOut"]
 
     assert len(ignored) == 1
-    # The stored reason is the technical one, with the arithmetic in it.
+    # The stored reason is the technical one, with the arithmetic in it. The window comes
+    # from settings rather than being written here: this is a number the user changes, and
+    # a test that hardcodes it fails for the wrong reason when they do.
+    from app.core.config import FaceRecognitionSettings
+
+    window = FaceRecognitionSettings().reentry_block_minutes
+
     assert "re-entry window" in ignored[0]["failure_reason"]
-    assert "30-minute" in ignored[0]["failure_reason"]
+    assert f"{window}-minute" in ignored[0]["failure_reason"]

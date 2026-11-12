@@ -119,6 +119,15 @@ b) Two shift rules on /v1/attendance/punch, which can refuse or redirect a punch
      a NEW check-in even if the app asked for a check_out - somebody who never checked out
      yesterday is arriving, not leaving.
 
+   * A check_in within 15 minutes of a check_out is ignored - somebody who has finished and
+     walks back past the kiosk is not starting a second shift:
+
+         {{"success": false, "message": "You already checked out at 17:02. Nothing more to
+          do."}}
+
+     Please show that as the reassurance it is rather than as an error. They have done
+     nothing wrong, and a message that reads like a failure makes people try again.
+
    Because of that second rule, a successful punch now tells you what was actually recorded:
 
        {{"success": true, "type": "check_in", "message": "Checked in. Your last check-in was

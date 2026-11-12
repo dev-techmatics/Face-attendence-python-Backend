@@ -183,7 +183,7 @@ class FaceRecognitionSettings(BaseSettings):
     #:
     #: The cost is a real second shift starting inside the window, which an admin now adds
     #: by hand. 0 disables the rule.
-    reentry_block_minutes: int = 30
+    reentry_block_minutes: int = 15
 
     #: Shortest gap allowed between a check-in and the check-out that closes it. A check-out
     #: sooner than this is refused as TooSoon and the person stays checked in, so the shift
