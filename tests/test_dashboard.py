@@ -1917,17 +1917,6 @@ async def test_hr_cannot_open_or_apply_an_edit(client):
             data={"direction": "Out", "happened_at": "2026-11-01T18:00", "reason": "nope"},
         )
     ).status_code == 404
-    assert (
-        await client.post(
-            "/admin/attendance/add",
-            data={
-                "employee_id": "TS4012",
-                "direction": "In",
-                "happened_at": "2026-11-01T09:00",
-                "reason": "nope",
-            },
-        )
-    ).status_code == 404
 
 
 async def test_an_edit_changes_the_punch_and_is_recorded(client):
@@ -2020,54 +2009,6 @@ async def test_a_punch_cannot_be_moved_into_the_future(client):
     )
 
     assert response.status_code == 400
-
-
-async def test_a_hand_added_punch_never_looks_like_a_face_match(client):
-    """It counts for pay, so it must be obvious it was typed rather than recognised."""
-    await signed_in_hr(client)
-    await enrol(client, "TS4012", "Alice Example", "alice")
-
-    local = datetime.now().astimezone().tzinfo
-    when = (datetime.now(local) - timedelta(hours=5)).replace(second=0, microsecond=0)
-
-    response = await client.post(
-        "/admin/attendance/add",
-        data={
-            "employee_id": "TS4012",
-            "direction": "In",
-            "happened_at": when.strftime("%Y-%m-%dT%H:%M"),
-            "reason": "Kiosk was down; let in by reception",
-        },
-    )
-
-    assert response.status_code == 303
-
-    factory = get_session_factory()
-
-    async with factory() as session:
-        event = (
-            await session.execute(
-                select(AttendanceEvent).order_by(AttendanceEvent.id.desc()).limit(1)
-            )
-        ).scalars().one()
-        trail = (
-            await session.execute(
-                select(AttendanceEdit).where(
-                    AttendanceEdit.attendance_event_id == event.id
-                )
-            )
-        ).scalars().all()
-
-    assert event.device_id == "manual"
-    assert event.match_score == 0.0
-    assert event.direction == AttendanceDirection.In
-    assert event.created_at_utc.astimezone(local) == when
-    # It still counts, which is the point of adding it.
-    assert event.decision == AttendanceDecision.Accepted
-
-    assert len(trail) == 1
-    assert trail[0].field == "created"
-    assert "Kiosk was down" in trail[0].reason
 
 
 async def test_the_decision_cannot_be_edited(client):

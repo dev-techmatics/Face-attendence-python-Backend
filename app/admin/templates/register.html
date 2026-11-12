@@ -80,31 +80,6 @@
   the <a href="/admin/register?{{ query_string }}">Every attempt</a> tab{% endif %}.</p>
 
 {% else %}
-{% if is_admin %}
-<div class="panel">
-  <h2>Add a punch that was never made</h2>
-  <form class="filters" method="post" action="/admin/attendance/add">
-    <div><label for="employee_id">Employee ID</label>
-      <input type="text" id="employee_id" name="employee_id" required placeholder="12345"></div>
-    <div><label for="add_direction">Check in or out</label>
-      <select id="add_direction" name="direction"
-              style="padding:7px 9px;border:1px solid var(--line);border-radius:7px;font:inherit;background:#fff">
-        <option value="In">Check in</option>
-        <option value="Out">Check out</option>
-      </select></div>
-    <div><label for="add_at">When</label>
-      <input type="datetime-local" id="add_at" name="happened_at" required></div>
-    <div style="flex:1 1 280px"><label for="add_reason">Why &mdash; required</label>
-      <input type="text" id="add_reason" name="reason" required maxlength="500"
-             placeholder="Forgot to check out" style="width:100%"></div>
-    <button type="submit">Add it</button>
-  </form>
-  <p class="note" style="margin:0; padding:0 16px 14px;">Recorded as
-    <strong>manual</strong> with no match score, so it never reads as a face the camera
-    matched. The reason is kept with it.</p>
-</div>
-{% endif %}
-
 <div class="panel">
   <h2>Every attempt, newest first</h2>
   {% if rows %}

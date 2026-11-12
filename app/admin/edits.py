@@ -11,9 +11,14 @@ from that, and none of them is optional:
   of ``manual`` and a match score of nought, so every screen that shows a punch shows the
   difference without being taught to.
 
-What can be changed is deliberately narrow: the **direction** and the **time**, plus adding
-a punch that was never made. Those are the real corrections - somebody tapped the wrong
-button, somebody was let in by hand, somebody forgot entirely.
+What can be changed is deliberately narrow: the **direction** and the **time** of a punch
+that was actually made. Those are the real corrections - somebody tapped the wrong button,
+or the clock was out.
+
+Adding a punch nobody made was built and then removed at the user's request. Worth knowing
+if it is ever wanted back: the hard part was not the form, it was that an invented punch
+must never read as a face the camera matched, which is why anything of the sort has to
+carry its own device name and a score of nought.
 
 The **decision** is not editable, and should not become so. Turning a rejection into an
 acceptance would fabricate an attendance that no camera ever saw, which is the one thing
@@ -45,10 +50,6 @@ from app.domain.models import AttendanceEdit, AttendanceEvent, Person
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/attendance", tags=["dashboard"], include_in_schema=False)
-
-#: What a hand-made punch carries instead of a kiosk name. Every screen already shows the
-#: device, so this is visible everywhere without a single template change.
-MANUAL_DEVICE = "manual"
 
 #: Long enough to say what happened, short enough that nobody writes an essay instead of a
 #: reason.
@@ -252,104 +253,6 @@ async def apply_edit(
         ADMIN,
         request.client.host if request.client else "unknown",
         "; ".join(f"{c.field} {c.old_value} -> {c.new_value}" for c in changes),
-    )
-
-    return _back(request)
-
-
-@router.post("/add")
-async def add_punch(
-    request: Request,
-    session: SessionDep,
-    tenant: TenantDep,
-    _: AdminOnly,
-    employee_id: Annotated[str, Form()] = "",
-    direction: Annotated[str, Form()] = "",
-    happened_at: Annotated[str, Form()] = "",
-    reason: Annotated[str, Form()] = "",
-) -> Response:
-    """Record a punch that was never made.
-
-    The common case is somebody who forgot to check out, whose day otherwise pays nothing.
-    It is marked ``manual`` and scored nought, so it is never mistaken for a face match.
-    """
-    reason = reason.strip()
-    employee_id = employee_id.strip().upper()
-
-    person = (
-        await session.execute(
-            select(Person).where(
-                Person.tenant_id == tenant, Person.external_id == employee_id
-            )
-        )
-    ).scalars().first()
-
-    if person is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "There is no such person.")
-
-    if not MIN_REASON <= len(reason) <= MAX_REASON:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A reason is required.")
-
-    try:
-        wanted_direction = AttendanceDirection(direction)
-    except ValueError:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "Choose check-in or check-out."
-        ) from None
-
-    local_zone = datetime.now().astimezone().tzinfo
-
-    try:
-        wanted_at = datetime.fromisoformat(happened_at).replace(tzinfo=local_zone)
-    except ValueError:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "That is not a valid date and time."
-        ) from None
-
-    now = datetime.now(local_zone)
-
-    if wanted_at > now:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A punch cannot be in the future.")
-
-    event = AttendanceEvent(
-        tenant_id=tenant,
-        person_id=person.id,
-        direction=wanted_direction,
-        decision=AttendanceDecision.Accepted,
-        match_score=0.0,
-        threshold=0.0,
-        provider_id=MANUAL_DEVICE,
-        device_id=MANUAL_DEVICE,
-        created_at_utc=wanted_at,
-        captured_at_utc=None,
-        processing_ms=0,
-        edited_at_utc=now,
-    )
-
-    session.add(event)
-    await session.flush()
-
-    session.add(
-        _audit(
-            request,
-            event,
-            "created",
-            None,
-            f"{wanted_direction.name} at {wanted_at.strftime('%Y-%m-%d %H:%M')}",
-            reason,
-            now,
-        )
-    )
-
-    await session.commit()
-
-    logger.warning(
-        "Attendance added by hand for %s by %s from %s: %s at %s",
-        employee_id,
-        ADMIN,
-        request.client.host if request.client else "unknown",
-        wanted_direction.name,
-        wanted_at.strftime("%Y-%m-%d %H:%M"),
     )
 
     return _back(request)
