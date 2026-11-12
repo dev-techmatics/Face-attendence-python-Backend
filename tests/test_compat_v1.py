@@ -901,3 +901,86 @@ async def test_the_two_hour_floor_applies_to_the_fresh_check_in_too(client):
 
     assert body["success"] is False
     assert "2 hours" in body["message"]
+
+
+# ---- walking back past the kiosk ---------------------------------------------------------
+# Somebody who has finished and whose face passes the camera again is not starting a second
+# shift. The two-minute double-tap guard was far too short for this: on the live database it
+# had fired zero times while four re-scans between three and nine minutes after a check-out
+# had each become a real shift.
+
+
+async def test_a_check_in_soon_after_checking_out_is_ignored(client):
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=3)
+    await punch(client, "TS4012", "check_out")
+
+    # Nine minutes later their face passes the camera again.
+    await shift_punches_back("TS4012", hours=0.15)
+    body = (await punch(client, "TS4012", "check_in")).json()
+
+    assert body["success"] is False
+    # Says they are finished, not that they were refused: they have done nothing wrong.
+    assert "already checked out" in body["message"].lower()
+    assert "Nothing more to do" in body["message"]
+
+    rows = await punch_rows(client, "TS4012")
+
+    assert [r["decision"] for r in rows] == ["Accepted", "Accepted", "AlreadyCheckedOut"]
+    # The shift that was worked is untouched; no second one was opened.
+    accepted = [r for r in rows if r["decision"] == "Accepted"]
+    assert [r["direction"] for r in accepted] == ["In", "Out"]
+
+
+async def test_the_window_lets_a_real_return_through(client):
+    """Past the window it is somebody coming back, and that has to work."""
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=3)
+    await punch(client, "TS4012", "check_out")
+
+    # Forty minutes later, which is outside the thirty-minute window.
+    await shift_punches_back("TS4012", hours=0.67)
+    body = (await punch(client, "TS4012", "check_in")).json()
+
+    assert body["success"] is True
+    assert body["type"] == "check_in"
+
+
+async def test_the_rule_only_points_one_way(client):
+    """A check-OUT soon after a check-in must still reach the minimum-shift rule.
+
+    Blocking both directions for half an hour would stop somebody correcting a mis-tapped
+    check-in, which is the one thing the short double-tap window is genuinely good at.
+    """
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=0.5)
+
+    body = (await punch(client, "TS4012", "check_out")).json()
+
+    assert body["success"] is False
+    # TooSoon, not AlreadyCheckedOut - a different rule, with its own message.
+    assert "check-out needs" in body["message"]
+
+    rows = await punch_rows(client, "TS4012")
+    assert rows[-1]["decision"] == "TooSoon"
+
+
+async def test_the_ignored_scan_is_recorded_not_dropped(client):
+    """Kept as evidence, and so the Problems page can count how often it happens."""
+    await register(client, employee_id="TS4012", identity="alice")
+    await punch(client, "TS4012", "check_in")
+    await shift_punches_back("TS4012", hours=3)
+    await punch(client, "TS4012", "check_out")
+    await shift_punches_back("TS4012", hours=0.15)
+    await punch(client, "TS4012", "check_in")
+
+    rows = await punch_rows(client, "TS4012")
+    ignored = [r for r in rows if r["decision"] == "AlreadyCheckedOut"]
+
+    assert len(ignored) == 1
+    # The stored reason is the technical one, with the arithmetic in it.
+    assert "re-entry window" in ignored[0]["failure_reason"]
+    assert "30-minute" in ignored[0]["failure_reason"]

@@ -31,6 +31,7 @@ OUTCOME = {
     AttendanceDecision.SpoofSuspected: "Suspected photo of a photo",
     AttendanceDecision.ProviderError: "Face service error",
     AttendanceDecision.TooSoon: "Too soon to check out",
+    AttendanceDecision.AlreadyCheckedOut: "Already checked out",
 }
 
 #: What a failure usually means in the real world, for the Problems screen. The point of that
@@ -45,6 +46,11 @@ LIKELY_CAUSE = {
     AttendanceDecision.TooSoon: (
         "People trying to check out before the minimum shift length. A steady trickle means "
         "the minimum is set longer than the shifts people actually work."
+    ),
+    AttendanceDecision.AlreadyCheckedOut: (
+        "Faces passing the camera again after finishing for the day. A few is normal. A lot "
+        "means the kiosk is somewhere people walk back through, and moving it will do more "
+        "than any setting."
     ),
 }
 

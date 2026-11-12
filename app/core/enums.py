@@ -87,6 +87,16 @@ class AttendanceDecision(NamedIntEnum):
     #: Problems screen.
     TooSoon = 9
 
+    #: They had already checked out, and their face appeared again soon after - almost
+    #: always somebody walking back past the kiosk rather than starting a second shift.
+    #: Nothing is recorded as attendance.
+    #:
+    #: Its own outcome rather than Duplicate, for two reasons. The screen needs to say
+    #: something different ("you are done" rather than "that was already recorded"), and
+    #: counting it separately on the Problems page answers a question Duplicate cannot: if
+    #: this fires twenty times a week, the kiosk is somewhere people walk back through.
+    AlreadyCheckedOut = 10
+
 
 class FaceTemplateKind(NamedIntEnum):
     #: A numeric vector we can compare ourselves, in-process.

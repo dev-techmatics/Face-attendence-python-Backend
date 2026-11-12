@@ -169,6 +169,22 @@ class FaceRecognitionSettings(BaseSettings):
     #: Infer In/Out from the previous event instead of trusting the client.
     infer_direction: bool = True
 
+    #: How long after a check-out a check-in is ignored.
+    #:
+    #: Somebody who has finished and walks back past the kiosk should not start a second
+    #: shift. ``duplicate_punch_window_minutes`` was meant to catch this and is far too
+    #: short for it: measured on the live database, it had fired **zero** times while four
+    #: re-scans between three and nine minutes after a check-out had each become a real
+    #: shift.
+    #:
+    #: Deliberately one-directional. Raising the general duplicate window to half an hour
+    #: would also stop somebody correcting a mis-tapped check-in for half an hour, and that
+    #: correction is the one thing the short window is genuinely good at.
+    #:
+    #: The cost is a real second shift starting inside the window, which an admin now adds
+    #: by hand. 0 disables the rule.
+    reentry_block_minutes: int = 30
+
     #: Shortest gap allowed between a check-in and the check-out that closes it. A check-out
     #: sooner than this is refused as TooSoon and the person stays checked in, so the shift
     #: is still there to be closed properly later. 0 disables the rule.

@@ -458,7 +458,10 @@ async def punch(
             type="check_in" if checked_in else "check_out",
         )
 
-    if result.decision == AttendanceDecision.TooSoon:
+    if result.decision in (
+        AttendanceDecision.TooSoon,
+        AttendanceDecision.AlreadyCheckedOut,
+    ):
         # The reason carries the actual numbers ("Checked in 35 minutes ago, and a check-out
         # needs at least 2 hours"), which is what stops the person trying again immediately.
         return no(result.message or _punch_message_for_decision(result.decision, type))
@@ -493,6 +496,11 @@ def _punch_message_for_decision(decision: AttendanceDecision, kind: str) -> str:
             # in and how long is required - so the caller passes that through instead of this
             # fallback. Reached only if the reason is missing.
             return "It is too soon to check out. You are still checked in."
+        case AttendanceDecision.AlreadyCheckedOut:
+            # Same: the service names the time they left. This is the fallback, and it says
+            # they are finished rather than that they were refused, because they have done
+            # nothing wrong - their face simply passed the camera again.
+            return "You have already checked out today."
         case _:
             return NO_MATCH
 

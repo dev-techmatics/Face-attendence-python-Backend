@@ -41,8 +41,11 @@ class _ShiftDecision:
 
     direction: AttendanceDirection
 
-    #: Set when the punch must be refused, carrying the reason the person will read.
+    #: Set when the punch must be refused. Technical, and stored on the row.
     refusal: str | None = None
+
+    #: Which outcome a refusal is recorded as.
+    decision: AttendanceDecision = AttendanceDecision.TooSoon
 
     #: Set when the server recorded something other than what the device asked for. It is
     #: shown to the person, because a kiosk that says "Checked out" while recording a
@@ -273,7 +276,7 @@ class AttendanceService:
                 now,
                 started_at,
                 matched,
-                AttendanceDecision.TooSoon,
+                shift.decision,
                 score=match.score,
                 threshold=threshold,
                 matched_pose=match.pose,
@@ -282,6 +285,7 @@ class AttendanceService:
                 top_scores=match.top_scores,
                 include_diagnostics=include_diagnostics,
                 direction=shift.direction,
+                note=shift.note,
             )
 
         return await self._record(
@@ -421,6 +425,35 @@ class AttendanceService:
         """
         wanted = await self._resolve_direction(command, person)
         last = await self._attendance.get_last_accepted(person.id)
+
+        # Rule 0, before anything else. Somebody who has finished and walks back past the
+        # kiosk is not starting a second shift, and the two-minute double-tap guard is far
+        # too short to catch it - on the live database it had never fired once while
+        # re-scans three to nine minutes after a check-out had each become a shift.
+        if (
+            last is not None
+            and self._settings.reentry_block_minutes > 0
+            and AttendanceDirection(last.direction) == AttendanceDirection.Out
+            and wanted == AttendanceDirection.In
+        ):
+            since = now - last.created_at_utc
+
+            if since < timedelta(minutes=self._settings.reentry_block_minutes):
+                return _ShiftDecision(
+                    AttendanceDirection.In,
+                    refusal=(
+                        f"Checked out at {last.created_at_utc.astimezone():%H:%M}, "
+                        f"{_spoken_duration(since)} ago; inside the "
+                        f"{self._settings.reentry_block_minutes}-minute re-entry window."
+                    ),
+                    decision=AttendanceDecision.AlreadyCheckedOut,
+                    # What the person reads. They have done nothing wrong, so it says they
+                    # are finished rather than that they were refused.
+                    note=(
+                        f"You already checked out at "
+                        f"{last.created_at_utc.astimezone():%H:%M}. Nothing more to do."
+                    ),
+                )
 
         open_in = (
             last
@@ -565,7 +598,7 @@ class AttendanceService:
             recorded_at_utc=now,
             # On a refusal this is the reason; on an accepted punch it is only set when the
             # server recorded a different direction than the device asked for. Never both.
-            message=failure_reason or note,
+            message=note or failure_reason,
             processing_ms=elapsed_ms,
             top_scores=list(top_scores) if include_diagnostics else [],
         )
